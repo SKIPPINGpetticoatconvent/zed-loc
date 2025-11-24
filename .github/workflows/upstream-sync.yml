@@ -1,0 +1,50 @@
+name: Sync Upstream Zed Releases
+
+on:
+  schedule:
+    - cron: "0 */6 * * *" # 每 6 小时检查一次
+  workflow_dispatch:
+
+jobs:
+  check-upstream:
+    runs-on: ubuntu-latest
+    outputs:
+      latest: ${{ steps.getver.outputs.latest }}
+    steps:
+      - name: Get latest upstream version
+        id: getver
+        run: |
+          latest=$(curl -s https://api.github.com/repos/zed-industries/zed/releases/latest | jq -r .tag_name)
+          echo "latest=$latest" >> $GITHUB_OUTPUT
+
+      - name: Get local latest tag
+        id: local
+        run: |
+          local=$(curl -s https://api.github.com/repos/SKIPPINGpetticoatconvent/zed-loc/releases/latest | jq -r .tag_name)
+          echo "local=$local" >> $GITHUB_OUTPUT
+
+      - name: Compare versions
+        id: compare
+        run: |
+          if [ "${{ steps.getver.outputs.latest }}" != "${{ steps.local.outputs.local }}" ]; then
+            echo "update_needed=true" >> $GITHUB_OUTPUT
+          else
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+          fi
+
+  trigger-build:
+    needs: check-upstream
+    if: needs.check-upstream.outputs.update_needed == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger build workflow
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: SKIPPINGpetticoatconvent/zed-loc
+          event-type: upstream-release
+          client-payload: |
+            {
+              "version": "${{ needs.check-upstream.outputs.latest }}"
+            }
