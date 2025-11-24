@@ -225,14 +225,21 @@ jobs:
           cp zed/target/release/zed dist/usr/bin/
           tar -czvf zed-linux-x86_64.tar.gz -C dist .
 
+          # Deb 打包
           mkdir -p deb-pkg/DEBIAN
           mkdir -p deb-pkg/usr/bin
           cp zed/target/release/zed deb-pkg/usr/bin/
+
+          # === 关键修复：去除版本号开头的 'v' ===
+          RAW_VERSION="${{ needs.versioning.outputs.version }}"
+          CLEAN_VERSION="${RAW_VERSION#v}"
+
           echo "Package: zed-editor" > deb-pkg/DEBIAN/control
-          echo "Version: ${{ needs.versioning.outputs.version }}" >> deb-pkg/DEBIAN/control
+          echo "Version: $CLEAN_VERSION" >> deb-pkg/DEBIAN/control
           echo "Architecture: amd64" >> deb-pkg/DEBIAN/control
           echo "Maintainer: Zed-Loc" >> deb-pkg/DEBIAN/control
           echo "Description: A high-performance, multiplayer code editor." >> deb-pkg/DEBIAN/control
+
           dpkg-deb --build deb-pkg zed-linux-x86_64.deb
 
       - name: 上传产物
