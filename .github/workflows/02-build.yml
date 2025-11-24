@@ -8,7 +8,7 @@ on:
         type: boolean
       branch:
         type: string
-        default: main
+        default: ma在
         description: "分支名"
 
   repository_dispatch:
@@ -143,7 +143,7 @@ jobs:
   ################################################################################
   # 4. macOS job
   ################################################################################
-  build-macos:
+    build-macos:
     runs-on: macos-latest
     needs: process-windows-strings
 
@@ -153,8 +153,11 @@ jobs:
         with:
           name: patched-zed-src
 
+      - name: 安装 7zip（macOS）
+        run: brew install p7zip
+
       - name: 解压 patched 源码
-        run: unzip patched-zed-src.zip -d .
+        run: 7z x patched-zed-src.7z
 
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
@@ -173,6 +176,7 @@ jobs:
         with:
           name: mac-build
           path: zed-macos.tar.gz
+
 
   ################################################################################
   # 5. Release job
