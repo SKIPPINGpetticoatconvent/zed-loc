@@ -200,24 +200,34 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y \
+            build-essential \
             pkg-config \
+            python3 \
             libasound2-dev \
             libx11-dev \
             libx11-xcb-dev \
             libxkbfile-dev \
             libgtk-3-dev \
+            libwayland-dev \
             libxkbcommon-dev \
             libxkbcommon-x11-dev \
-            libwayland-dev \
-            libssl-dev \
-            libudev-dev \
             libxcb1-dev \
             libxcb-render0-dev \
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
-            libclang-dev \
+            libxcb-xinerama0-dev \
+            libxcb-randr0-dev \
+            libxcb-keysyms1-dev \
+            libxcb-util-dev \
             libgl1-mesa-dev \
-            libfreetype6-dev
+            libegl1-mesa-dev \
+            libfreetype6-dev \
+            libfontconfig1-dev \
+            libssl-dev \
+            libudev-dev \
+            libclang-dev \
+            clang \
+            cmake
 
       - name: 安装 p7zip
         run: sudo apt install p7zip-full -y
