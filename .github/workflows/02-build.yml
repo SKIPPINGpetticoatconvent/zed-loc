@@ -1,4 +1,4 @@
-name: 02 汉化发行（全流程一键自动化）
+name: 02 汉化发行（全流程一键自动化｜支持交叉编译 Windows）
 
 on:
   workflow_dispatch:
@@ -15,11 +15,11 @@ on:
     types: [upstream-release]
 
   schedule:
-    - cron: "0 15 * * *" # 北京时间 23:00 自动检查构建
+    - cron: "0 15 * * *"
 
 jobs:
   ################################################################################
-  #                               统一构建流程                                   #
+  # 1. 全局初始化（Linux）
   ################################################################################
   build-all:
     runs-on: ubuntu-latest
@@ -37,30 +37,12 @@ jobs:
           else
             echo "UPSTREAM_VERSION=$(date +'%Y%m%d')" >> $GITHUB_ENV
           fi
-          echo "当前版本：$UPSTREAM_VERSION"
-
-      - name: 安装依赖 (Python / Rust / Git)
-        run: |
-          sudo apt update -y
-          sudo apt install -y python3 python3-pip git rustup
-          rustup default stable
-
-      - name: 克隆 Zed 官方源码
-        run: |
-          git clone https://github.com/zed-industries/zed.git
-          echo "官方源码克隆完成"
-
-      ################################################################################
-      #                         自动提取 / 删除 / 替换词条                            #
-      ################################################################################
-
-      - name: （Windows-only）提取词条准备
-        run: echo "词条提取只能在 Windows 执行，使用 matrix job 处理"
+          echo "版本号：$UPSTREAM_VERSION"
 
   ################################################################################
-  # Windows 词条处理 + Windows 构建
+  # 2. Windows job（仅词条处理，不构建 Windows 版本）
   ################################################################################
-  build-windows:
+  process-windows-strings:
     runs-on: windows-latest
     needs: build-all
 
@@ -68,7 +50,7 @@ jobs:
       - name: Checkout zed-loc
         uses: actions/checkout@v4
 
-      - name: 克隆 Zed 官方源码
+      - name: 克隆 Zed 源码
         run: git clone https://github.com/zed-industries/zed.git
 
       - name: 安装 Python
@@ -77,15 +59,7 @@ jobs:
           python-version: "3.x"
 
       - name: 安装 Python 依赖
-        run: |
-          pip install pyyaml
-
-      - name: 安装 Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: 启用 Windows 长路径支持
-        run: |
-          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1
+        run: pip install pyyaml
 
       - name: 提取词条
         run: python extract.py
@@ -96,101 +70,111 @@ jobs:
       - name: 替换词条
         run: python replace.py
 
-      - name: 构建 Windows
+      - name: 打包处理后的源码
         run: |
-          cd zed
-          cargo build --release
-          cd ..
-          mkdir output
-          cp zed/target/release/zed.exe output/
-          powershell Compress-Archive -Path output/* -DestinationPath zed-windows.zip
+          powershell Compress-Archive -Path zed -DestinationPath patched-zed-src.zip
 
-      - name: 上传 Windows 构建产物
+      - name: 上传 patched 源码
         uses: actions/upload-artifact@v4
         with:
-          name: zed-windows
-          path: zed-windows.zip
+          name: patched-zed-src
+          path: patched-zed-src.zip
 
   ################################################################################
-  # Linux / deb / tar.gz 构建
+  # 3. Linux job（交叉编译 Windows + Linux 二进制 + deb）
   ################################################################################
   build-linux:
     runs-on: ubuntu-latest
-    needs: build-windows
+    needs: process-windows-strings
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: 下载 patched 源码
+        uses: actions/download-artifact@v4
+        with:
+          name: patched-zed-src
 
-      - name: 安装 Rust
+      - name: 解压 patched 源码
+        run: unzip patched-zed-src.zip -d .
+
+      - name: 安装 Rust（含 Windows 交叉编译工具链）
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: |
+            x86_64-pc-windows-gnu
 
-      - name: 克隆 Zed 官方源码
-        run: git clone https://github.com/zed-industries/zed.git
+      - name: 构建 Windows 版本（交叉编译）
+        run: |
+          cd zed
+          cargo build --release --target x86_64-pc-windows-gnu
+          cd ..
+          mkdir winbuild
+          cp zed/target/x86_64-pc-windows-gnu/release/zed.exe winbuild/
+          zip -r zed-windows.zip winbuild
 
-      - name: 构建 Linux 二进制
+      - name: 构建 Linux 版本
         run: |
           cd zed
           cargo build --release
           cd ..
-          mkdir linux-build
-          cp zed/target/release/zed linux-build/
-          tar -czvf zed-linux-x86_64.tar.gz linux-build
+          mkdir linux-x86_64
+          cp zed/target/release/zed linux-x86_64/
+          tar -czvf zed-linux-x86_64.tar.gz linux-x86_64
 
-      - name: 构建 deb 包
+      - name: 构建 deb
         run: |
-          mkdir debpkg
           mkdir -p debpkg/usr/bin
-          cp zed-linux-x86_64.tar.gz debpkg/usr/bin/zed
+          cp linux-x86_64/zed debpkg/usr/bin/zed
           dpkg-deb --build debpkg zed-linux-x86_64.deb
 
-      - name: 上传 Linux 构建产物
+      - name: 上传 Linux + Windows 构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: zed-linux
+          name: linux-windows-builds
           path: |
+            zed-windows.zip
             zed-linux-x86_64.tar.gz
             zed-linux-x86_64.deb
 
   ################################################################################
-  # macOS 构建
+  # 4. macOS job
   ################################################################################
   build-macos:
     runs-on: macos-latest
-    needs: build-windows
+    needs: process-windows-strings
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: 下载 patched 源码
+        uses: actions/download-artifact@v4
+        with:
+          name: patched-zed-src
+
+      - name: 解压 patched 源码
+        run: unzip patched-zed-src.zip -d .
 
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: 克隆 Zed 官方源码
-        run: git clone https://github.com/zed-industries/zed.git
-
-      - name: 构建 macOS
+      - name: 构建 macOS 版本
         run: |
           cd zed
           cargo build --release
           cd ..
-          mkdir mac-build
-          cp zed/target/release/zed mac-build/
-          tar -czvf zed-macos.tar.gz mac-build/
+          mkdir macbuild
+          cp zed/target/release/zed macbuild/
+          tar -czvf zed-macos.tar.gz macbuild/
 
-      - name: 上传 macOS 构建产物
+      - name: 上传 mac 构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: zed-macos
+          name: mac-build
           path: zed-macos.tar.gz
 
   ################################################################################
-  # Release + Scoop 更新
+  # 5. Release job
   ################################################################################
   release:
     runs-on: ubuntu-latest
     needs:
-      - build-windows
       - build-linux
       - build-macos
 
@@ -198,12 +182,12 @@ jobs:
       - name: 下载所有构建产物
         uses: actions/download-artifact@v4
 
-      - name: 生成 SHA256
+      - name: 生成 sha256
         run: |
-          sha256sum zed-windows/zed-windows.zip > sha256sums.txt
-          sha256sum zed-linux/zed-linux-x86_64.tar.gz >> sha256sums.txt
-          sha256sum zed-linux/zed-linux-x86_64.deb >> sha256sums.txt
-          sha256sum zed-macos/zed-macos.tar.gz >> sha256sums.txt
+          sha256sum linux-windows-builds/zed-windows.zip > sha256sums.txt
+          sha256sum linux-windows-builds/zed-linux-x86_64.tar.gz >> sha256sums.txt
+          sha256sum linux-windows-builds/zed-linux-x86_64.deb >> sha256sums.txt
+          sha256sum mac-build/zed-macos.tar.gz >> sha256sums.txt
 
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
@@ -211,10 +195,10 @@ jobs:
           name: ${{ needs.build-all.outputs.UPSTREAM_VERSION }}
           tag_name: ${{ needs.build-all.outputs.UPSTREAM_VERSION }}
           files: |
-            zed-windows/zed-windows.zip
-            zed-linux/zed-linux-x86_64.tar.gz
-            zed-linux/zed-linux-x86_64.deb
-            zed-macos/zed-macos.tar.gz
+            linux-windows-builds/zed-windows.zip
+            linux-windows-builds/zed-linux-x86_64.tar.gz
+            linux-windows-builds/zed-linux-x86_64.deb
+            mac-build/zed-macos.tar.gz
             sha256sums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
