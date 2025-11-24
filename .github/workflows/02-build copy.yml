@@ -207,7 +207,9 @@ jobs:
             libxcb-render0-dev \
             libxcb-shape0-dev \
             libxcb-xfixes0-dev \
-            libclang-dev
+            libclang-dev \
+            libasound2-dev \
+            libglib2.0-dev
 
       - name: 安装 p7zip
         run: sudo apt install p7zip-full -y
