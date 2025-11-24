@@ -69,19 +69,18 @@ jobs:
           Copy-Item -Recurse -Force delete.py C:\z\
           Copy-Item -Recurse -Force replace.py C:\z\
           Copy-Item -Recurse -Force del.yaml C:\z\
-          Copy-Item -Recurse -Force strings.json C:\z\
 
-      - name: 执行 extract
+      - name: 提取词条（生成 strings.json）
         run: |
           cd C:\z
           python extract.py
 
-      - name: 执行 delete
+      - name: 删除多余词条
         run: |
           cd C:\z
           python delete.py
 
-      - name: 执行 replace
+      - name: 替换词条
         run: |
           cd C:\z
           python replace.py
