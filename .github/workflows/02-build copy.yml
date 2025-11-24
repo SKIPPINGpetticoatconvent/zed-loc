@@ -40,7 +40,6 @@ jobs:
           else
             echo "v=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
           fi
-          echo "版本号：${{ steps.version.outputs.v }}"
 
   ###############################################################################
   # 2. Windows：翻译 + 生成 patched-zed-src.7z（不编译 Windows）
@@ -61,8 +60,7 @@ jobs:
         with:
           path: ~\AppData\Local\pip\Cache
           key: pip-win
-          restore-keys: |
-            pip-win
+          restore-keys: pip-win
 
       - name: 安装 Python
         uses: actions/setup-python@v4
@@ -128,9 +126,8 @@ jobs:
             C:\cargo\registry
             C:\cargo\git
             C:\z\target
-          key: cargo-win-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-win-
+          key: cargo-win-${{ hashFiles('**/*.rs') }}
+          restore-keys: cargo-win-
 
       - name: 安装 sccache
         shell: pwsh
@@ -148,8 +145,7 @@ jobs:
         with:
           path: C:\Users\runneradmin\AppData\Local\sccache
           key: sccache-win
-          restore-keys: |
-            sccache-win
+          restore-keys: sccache-win
 
       - name: 启动 sccache
         run: sccache --start-server
@@ -183,7 +179,7 @@ jobs:
           path: zed-windows.zip
 
   ###############################################################################
-  # 4. Linux：并行构建
+  # 4. Linux：并行构建（加入 X11 + Wayland + GTK 依赖）
   ###############################################################################
   build-linux:
     runs-on: ubuntu-latest
@@ -194,6 +190,24 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: patched-zed-src
+
+      - name: 安装 Linux 构建依赖
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            pkg-config \
+            libx11-dev \
+            libxkbfile-dev \
+            libgtk-3-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libssl-dev \
+            libudev-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libclang-dev
 
       - name: 安装 p7zip
         run: sudo apt install p7zip-full -y
@@ -213,9 +227,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             zed/target
-          key: cargo-linux-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-linux-
+          key: cargo-linux-${{ hashFiles('**/*.rs') }}
+          restore-keys: cargo-linux-
 
       - name: 构建 Linux
         run: |
@@ -241,7 +254,7 @@ jobs:
             zed-linux-x86_64.deb
 
   ###############################################################################
-  # 5. macOS：并行构建
+  # 5. macOS：并行构建（修复 pkg-config + XQuartz）
   ###############################################################################
   build-macos:
     runs-on: macos-latest
@@ -253,8 +266,11 @@ jobs:
         with:
           name: patched-zed-src
 
-      - name: 安装 p7zip
-        run: brew install p7zip
+      - name: 安装 macOS 构建依赖
+        run: |
+          brew install pkg-config
+          brew install p7zip
+          brew install xquartz
 
       - name: 解压
         run: |
@@ -271,9 +287,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             zed/target
-          key: cargo-macos-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-macos-
+          key: cargo-macos-${{ hashFiles('**/*.rs') }}
+          restore-keys: cargo-macos-
 
       - name: 构建 macOS
         run: |
@@ -319,7 +334,7 @@ jobs:
           files: |
             zed-windows/zed-windows.zip
             zed-linux/zed-linux-x86_64.tar.gz
-            zed-linux/zed-linux_x86_64.deb
+            zed-linux/zed-linux-x86_64.deb
             zed-macos/zed-macos.tar.gz
             sha256sums.txt
         env:
