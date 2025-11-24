@@ -142,11 +142,13 @@ jobs:
 
       - name: 启用 cargo 增量编译
         shell: pwsh
-        run: Add-Content -Path $env:GITHUB_ENV -Value "CARGO_INCREMENTAL=1"
+        run: |
+          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_INCREMENTAL=1"
 
       - name: 启用 Rust 多线程优化
         shell: pwsh
-        run: Add-Content -Path $env:RUSTFLAGS -Value "-Ccodegen-units=16 -Cincremental"
+        run: |
+          Add-Content -Path $env:GITHUB_ENV -Value "RUSTFLAGS=-Ccodegen-units=16 -Cincremental"
 
       ############################################################################
       # 8. 构建 Windows（二进制增量缓存 + 多线程）
