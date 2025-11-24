@@ -50,9 +50,10 @@ jobs:
 
     steps:
       - name: 缩短 CARGO_HOME（解决 pet 依赖路径过长）
+        shell: pwsh
         run: |
-          mkdir C:\cargo
-          echo "CARGO_HOME=C:\cargo" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force -Path C:\cargo
+          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_HOME=C:\cargo"
 
       - name: Checkout zed-loc
         uses: actions/checkout@v4
