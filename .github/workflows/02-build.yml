@@ -42,7 +42,7 @@ jobs:
           fi
 
   ###############################################################################
-  # 2. Windows：翻译 + 生成 patched-zed-src.7z（不编译 Windows）
+  # 2. Windows：翻译 + 生成 patched-zed-src.7z
   ###############################################################################
   build-windows-patch:
     runs-on: windows-latest
@@ -60,7 +60,6 @@ jobs:
         with:
           path: ~\AppData\Local\pip\Cache
           key: pip-win
-          restore-keys: pip-win
 
       - name: 安装 Python
         uses: actions/setup-python@v4
@@ -106,7 +105,7 @@ jobs:
           path: patched-zed-src.7z
 
   ###############################################################################
-  # 3. Windows：真正编译（与 Linux / macOS 并行执行）
+  # 3. Windows：正式构建（短路径＋缓存＋sccache）
   ###############################################################################
   build-windows-bin:
     runs-on: windows-latest
@@ -119,23 +118,27 @@ jobs:
           New-Item -ItemType Directory -Force -Path C:\cargo
           Add-Content -Path $env:GITHUB_ENV -Value "CARGO_HOME=C:\cargo"
 
-      - name: 禁用 wasmtime（必须在 Rust toolchain 之前）
+      - name: 禁用 wasmtime（必须在 Rust 之前）
         shell: pwsh
-        run: |
-          Add-Content -Path $env:GITHUB_ENV -Value "ZED_DISABLE_WASMTIME=1"
+        run: Add-Content -Path $env:GITHUB_ENV -Value "ZED_DISABLE_WASMTIME=1"
 
-      - name: Cargo 缓存
+      - name: 下载 patched-zed-src（必须在缓存之前）
+        uses: actions/download-artifact@v4
+        with:
+          name: patched-zed-src
+          path: .
+
+      - name: Cargo 缓存（基于 patched-zed-src.7z）
         uses: actions/cache@v3
         with:
           path: |
             C:\cargo\registry
             C:\cargo\git
             C:\z\target
-          key: cargo-win-${{ hashFiles('C:/z/Cargo.lock') }}
+          key: cargo-win-${{ hashFiles('patched-zed-src.7z') }}
           restore-keys: cargo-win-
 
       - name: 安装 sccache
-        shell: pwsh
         run: choco install sccache -y
 
       - name: 配置 sccache
@@ -148,12 +151,7 @@ jobs:
       - name: 启动 sccache
         run: sccache --start-server
 
-      - name: 下载 patched-zed-src
-        uses: actions/download-artifact@v4
-        with:
-          name: patched-zed-src
-
-      - name: 解压到 C:\z（保持短路径）
+      - name: 解压 patched-zed-src
         run: |
           Remove-Item -Recurse -Force C:\z -ErrorAction SilentlyContinue
           7z x patched-zed-src.7z -oC:\z
@@ -164,19 +162,19 @@ jobs:
       - name: 构建 Windows
         run: |
           cd C:\z
-          cargo build --release --jobs 1
+          cargo build --release --jobs 2
           mkdir C:\winpkg
           Copy-Item target\release\zed.exe C:\winpkg
           powershell Compress-Archive -Path C:\winpkg\* -DestinationPath zed-windows.zip
 
-      - name: 上传
+      - name: 上传 Windows 包
         uses: actions/upload-artifact@v4
         with:
           name: zed-windows
           path: zed-windows.zip
 
   ###############################################################################
-  # 4. Linux：并行构建（加入 X11 + Wayland + GTK 依赖）
+  # 4. Linux：构建（gold linker + 缓存修复）
   ###############################################################################
   build-linux:
     runs-on: ubuntu-latest
@@ -187,43 +185,21 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: patched-zed-src
+          path: .
 
       - name: 安装 Linux 构建依赖
         run: |
           sudo apt update
           sudo apt install -y \
-            build-essential \
-            pkg-config \
-            python3 \
-            libasound2-dev \
-            libx11-dev \
-            libx11-xcb-dev \
-            libxkbfile-dev \
-            libgtk-3-dev \
-            libxcb-xinput-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            libxkbcommon-x11-dev \
-            libxcb1-dev \
-            libxcb-render0-dev \
-            libxcb-shape0-dev \
-            libxcb-xfixes0-dev \
-            libxcb-xinerama0-dev \
-            libxcb-randr0-dev \
-            libxcb-keysyms1-dev \
-            libxcb-util-dev \
-            libgl1-mesa-dev \
-            libegl1-mesa-dev \
-            libfreetype6-dev \
-            libfontconfig1-dev \
-            libssl-dev \
-            libudev-dev \
-            libclang-dev \
-            clang \
-            cmake
-
-      - name: 安装 p7zip
-        run: sudo apt install p7zip-full -y
+            build-essential pkg-config python3 libasound2-dev \
+            libx11-dev libx11-xcb-dev libxkbfile-dev libgtk-3-dev \
+            libxcb-xinput-dev libwayland-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxcb-xinerama0-dev \
+            libxcb-randr0-dev libxcb-keysyms1-dev libxcb-util-dev \
+            libgl1-mesa-dev libegl1-mesa-dev \
+            libfreetype6-dev libfontconfig1-dev \
+            libssl-dev libudev-dev libclang-dev clang cmake
 
       - name: 解压
         run: |
@@ -240,19 +216,24 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             zed/target
-          key: cargo-linux-${{ hashFiles('**/*.rs') }}
+          key: cargo-linux-${{ hashFiles('zed/Cargo.lock') }}
           restore-keys: cargo-linux-
+
+      - name: 使用 Gold 链接器（修复 rust-lld 崩溃）
+        run: |
+          sudo apt install -y binutils-gold
+          echo "RUSTFLAGS=-C link-arg=-fuse-ld=gold -Clto=thin -Clink-arg=-Wl,--no-threads" >> $GITHUB_ENV
 
       - name: 构建 Linux
         run: |
           cd zed
-          cargo build --release
+          cargo build --release --jobs 2
           cd ..
           mkdir linuxpkg
           cp zed/target/release/zed linuxpkg/
           tar -czvf zed-linux-x86_64.tar.gz linuxpkg
 
-      - name: 构建 deb
+      - name: 构建 deb 包
         run: |
           mkdir -p debpkg/usr/bin
           cp zed/target/release/zed debpkg/usr/bin/zed
@@ -267,7 +248,7 @@ jobs:
             zed-linux-x86_64.deb
 
   ###############################################################################
-  # 5. macOS：并行构建（修复 pkg-config + XQuartz）
+  # 5. macOS：构建（明确 ARM64 架构）
   ###############################################################################
   build-macos:
     runs-on: macos-latest
@@ -278,6 +259,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: patched-zed-src
+          path: .
 
       - name: 安装 macOS 构建依赖
         run: |
@@ -300,23 +282,23 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             zed/target
-          key: cargo-macos-${{ hashFiles('**/*.rs') }}
+          key: cargo-macos-${{ hashFiles('zed/Cargo.lock') }}
           restore-keys: cargo-macos-
 
-      - name: 构建 macOS
+      - name: 编译 macOS ARM64
         run: |
           cd zed
-          cargo build --release
+          cargo build --release --jobs 2
           cd ..
           mkdir macpkg
           cp zed/target/release/zed macpkg/
-          tar -czvf zed-macos.tar.gz macpkg/
+          tar -czvf zed-macos-aarch64.tar.gz macpkg/
 
       - name: 上传 Mac 包
         uses: actions/upload-artifact@v4
         with:
           name: zed-macos
-          path: zed-macos.tar.gz
+          path: zed-macos-aarch64.tar.gz
 
   ###############################################################################
   # 6. Release（等待所有平台）
@@ -324,7 +306,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     needs:
-      - build-windows-bin
+      - build-winntws-bin
       - build-linux
       - build-macos
 
@@ -337,7 +319,7 @@ jobs:
           sha256sum zed-windows/zed-windows.zip > sha256sums.txt
           sha256sum zed-linux/zed-linux-x86_64.tar.gz >> sha256sums.txt
           sha256sum zed-linux/zed-linux-x86_64.deb >> sha256sums.txt
-          sha256sum zed-macos/zed-macos.tar.gz >> sha256sums.txt
+          sha256sum zed-macos/zed-macos-aarch64.tar.gz >> sha256sums.txt
 
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
@@ -348,7 +330,7 @@ jobs:
             zed-windows/zed-windows.zip
             zed-linux/zed-linux-x86_64.tar.gz
             zed-linux/zed-linux-x86_64.deb
-            zed-macos/zed-macos.tar.gz
+            zed-macos/zed-macos-aarch64.tar.gz
             sha256sums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
