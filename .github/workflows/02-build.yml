@@ -76,6 +76,10 @@ jobs:
         with:
           python-version: "3.x"
 
+      - name: 安装 Python 依赖
+        run: |
+          pip install pyyaml
+
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
 
