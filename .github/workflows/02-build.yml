@@ -148,7 +148,7 @@ jobs:
       - name: 启用 Rust 多线程优化
         shell: pwsh
         run: |
-          Add-Content -Path $env:GITHUB_ENV -Value "RUSTFLAGS=-Ccodegen-units=16 -Cincremental"
+          Add-Content -Path $env:GITHUB_ENV -Value "RUSTFLAGS=-Ccodegen-units=16"
 
       ############################################################################
       # 8. 构建 Windows（二进制增量缓存 + 多线程）
