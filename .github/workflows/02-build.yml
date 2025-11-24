@@ -100,10 +100,37 @@ jobs:
       - name: 启动 sccache server
         run: sccache --start-server
 
-      - name: 构建 Release
+      # === 优化：增加重试逻辑，解决 503 网络下载失败 ===
+      - name: 构建 Release (带重试)
+        shell: pwsh
         run: |
           cd C:\z
-          cargo build --release --jobs 2
+          $maxRetries = 3
+          $retryCount = 0
+
+          do {
+              $retryCount++
+              Write-Host "🚀 Build Attempt $retryCount / $maxRetries"
+
+              # 执行构建命令
+              cargo build --release --jobs 2
+
+              # 检查退出代码
+              if ($LASTEXITCODE -eq 0) {
+                  Write-Host "✅ Build Success!"
+                  exit 0
+              }
+
+              Write-Host "⚠️ Build failed with code $LASTEXITCODE."
+
+              if ($retryCount -lt $maxRetries) {
+                  Write-Host "⏳ Waiting 15 seconds before retrying..."
+                  Start-Sleep -Seconds 15
+              }
+          } while ($retryCount -lt $maxRetries)
+
+          Write-Error "❌ Build failed after $maxRetries attempts."
+          exit 1
 
       - name: 打印 sccache 统计
         run: sccache --show-stats
