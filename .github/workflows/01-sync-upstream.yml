@@ -1,4 +1,4 @@
-name: Sync Upstream Zed Releases
+name: 1.Sync Upstream Zed Releases
 
 on:
   schedule:

@@ -1,4 +1,4 @@
-name: 汉化发行-特定发行版
+name: 11.汉化发行-特定发行版
 
 on:
   workflow_dispatch:

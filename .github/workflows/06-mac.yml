@@ -1,4 +1,4 @@
-name: MacOS 编译
+name: 6.MacOS 编译
 on:
   workflow_dispatch:
     inputs:

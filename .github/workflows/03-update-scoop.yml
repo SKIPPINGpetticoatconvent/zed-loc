@@ -1,4 +1,4 @@
-name: Update Scoop Manifest
+name: 3.Update Scoop Manifest
 
 on:
   release:

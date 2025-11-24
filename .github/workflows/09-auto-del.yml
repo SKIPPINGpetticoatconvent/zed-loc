@@ -1,4 +1,4 @@
-name: 删除无用词条并提交
+name: 9.删除无用词条并提交
 on:
   workflow_dispatch:
 

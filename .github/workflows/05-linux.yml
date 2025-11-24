@@ -1,4 +1,4 @@
-name: Linux 编译
+name: 5.Linux 编译
 
 on:
   workflow_dispatch:
@@ -35,7 +35,7 @@ jobs:
 
       - name: 创建 Linux .tar.gz 包
         run: cd zed && script/bundle-linux
-      
+
       - name: 上传
         run: cd zed && script/upload-nightly linux-targz
 
@@ -79,7 +79,7 @@ jobs:
 
       - name: 创建 Linux .tar.gz 包
         run: cd zed && script/bundle-linux
-      
+
       - name: 上传
         run: cd zed && script/upload-nightly linux-targz
 

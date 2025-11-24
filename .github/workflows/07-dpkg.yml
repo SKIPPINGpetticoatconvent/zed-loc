@@ -1,4 +1,4 @@
-name: Debian 包测试
+name: 7.Debian 包测试
 
 on:
   workflow_dispatch:

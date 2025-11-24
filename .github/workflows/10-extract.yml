@@ -1,4 +1,4 @@
-name: 词条提取
+name: 10.词条提取
 on:
   workflow_dispatch:
     inputs:
