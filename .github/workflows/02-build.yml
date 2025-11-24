@@ -80,7 +80,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: patched-zed-src
-          path: patched-zed-src.zip
+          path: patched-zed-src.7z
 
   ################################################################################
   # 3. Linux job（交叉编译 Windows + Linux 二进制 + deb）
