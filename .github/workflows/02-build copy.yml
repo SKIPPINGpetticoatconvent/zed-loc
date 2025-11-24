@@ -163,6 +163,11 @@ jobs:
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: 禁用 wasmtime（Windows 必须）
+        shell: pwsh
+        run: |
+          Add-Content -Path $env:GITHUB_ENV -Value "ZED_DISABLE_WASMTIME=1"
+
       - name: 编译 Windows（MSVC）
         run: |
           cd zed
