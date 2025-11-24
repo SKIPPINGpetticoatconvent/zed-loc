@@ -1,0 +1,44 @@
+name: Update Scoop Manifest
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update:
+    runs-on: windows-latest
+
+    steps:
+      - name: Download zed-windows.zip
+        run: |
+          curl -L "${{ github.event.release.assets[0].browser_download_url }}" -o zed-windows.zip
+
+      - name: Generate SHA256
+        run: |
+          $sha = (Get-FileHash zed-windows.zip -Algorithm SHA256).Hash
+          echo "SHA256=$sha" >> $GITHUB_ENV
+
+      - name: Checkout bucket
+        uses: actions/checkout@v4
+        with:
+          repository: SKIPPINGpetticoatconvent/scoop-bucket
+          path: bucket
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update manifest
+        run: |
+          $file = "bucket/zed-loc.json"
+          $json = Get-Content $file | ConvertFrom-Json
+          $json.version = "${{ github.event.release.tag_name }}"
+          $json.url = "${{ github.event.release.assets[0].browser_download_url }}"
+          $json.hash = "${{ env.SHA256 }}"
+          $json | ConvertTo-Json -Depth 10 | Out-File $file -Encoding utf8
+
+      - name: Push update
+        run: |
+          cd bucket
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add zed-loc.json
+          git commit -m "Update zed-loc to ${{ github.event.release.tag_name }}"
+          git push

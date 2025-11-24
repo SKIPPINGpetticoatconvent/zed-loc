@@ -1,6 +1,7 @@
 name: 汉化发行
 
 on:
+  # 手动触发
   workflow_dispatch:
     inputs:
       release:
@@ -10,239 +11,77 @@ on:
         type: string
         default: main
         description: "分支名"
-    
-  schedule:
-    - cron: '0 15 * * *' # 每天北京时间23点（UTC+8, 等于UTC 15点）
 
-env:
-  CARGO_TERM_COLOR: always
+  # 自动同步上游版本
+  repository_dispatch:
+    types: [upstream-release]
+
+  # 定时构建（每天北京时间 23 点）
+  schedule:
+    - cron: "0 15 * * *" # 15:00 UTC = 23:00 北京时间
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        backend: [vulkan]
-        include:
-          - backend: vulkan
-            artifact_name: zed-release
-            rustflags: ""
-
-    steps:
-      - name: Enable long paths in Git
-        run: |
-          git config --system core.longpaths true
-
-      - name: Enable long paths in Windows
-        shell: powershell
-        run: |
-          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
-            -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
-
-      - uses: actions/checkout@v4
-
-      - name: 设置 Python 3.10
-        uses: actions/setup-python@v3
-        with:
-          python-version: "3.10"
-
-      - name: 手动同步 zed 源代码
-        uses: actions/checkout@v4
-        with:
-          repository: zed-industries/zed
-          ref: ${{ inputs.branch || 'main' }}
-          path: zed
-
-      - name: 替换
-        run: python3 replace.py
-
-      - name: Install rust nightly
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: nightly
-          override: true
-          target: wasm32-wasip1
-
-      - name: Rust 缓存
-        uses: Swatinem/rust-cache@v2.7.3
-        with:
-          key: ${{ matrix.backend }}
-          workspaces: "zed -> target"
-
-      - name: Install PSToml module
-        shell: pwsh
-        run: Install-Module -Name PSToml -Scope CurrentUser -Force
-
-      - name: Setup rustflags
-        shell: pwsh
-        run: ./Parse-Rustflags.ps1 ${{ matrix.rustflags }}
-
-      - name: 编译发行版
-        working-directory: zed
-        run: cargo build --release --jobs 4
-
-      - name: Archive build
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact_name }}
-          path: zed/target/release/zed.exe
-
-  build-dpkg-x86:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: 设置 Python 3.10
-        uses: actions/setup-python@v3
-        with:
-          python-version: "3.10"
-      - uses: actions/checkout@v4
-      - name: 手动同步 zed 源代码
-        uses: actions/checkout@v4
-        with:
-          repository: zed-industries/zed
-          ref: ${{ inputs.branch || 'main' }}
-          path: zed
-      - name: 替换
-        run: python3 replace.py
-
-      - name: 将 Rust 添加到 PATH
-        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
-      - name: 安装 Linux 依赖项
-        run: ./zed/script/linux && ./zed/script/install-mold 2.34.0
-
-      - name: 限制目标目录大小
-        run: zed/script/clear-target-dir-if-larger-than 100
-
-      - name: 创建 Linux .tar.gz 包
-        run: cd zed && script/bundle-linux
-
-      - name: 移动文件
-        run: mv zed/target/release/zed*.tar.gz zed-linux-x86_64.tar.gz
-
-      - name: 解压文件
-        run: tar -xvf zed-linux-x86_64.tar.gz
-
-      - name: 上传文件
-        uses: actions/upload-artifact@v4
-        with:
-          name: zed-linux-x86_64
-          path: zed-linux-x86_64.tar.gz
-
-      - name: 移动
-        run: mv zed-dev.app deb/usr
-
-      - name: 权限修复
-        run: chmod 775 deb -R
-
-      - name: 编译
-        run: dpkg-deb --build deb
-
-      - name: 改名
-        run: mv deb.deb zed-linux-x86_64.deb
-
-      - name: 上传文件
-        uses: actions/upload-artifact@v4
-        with:
-          name: zed-linux-x86_64.deb
-          path: zed-linux-x86_64.deb
-
-  build-dpkg-arm:
-    runs-on: ubuntu-22.04-arm
-
-    steps:
-      - name: 设置 Python 3.10
-        uses: actions/setup-python@v3
-        with:
-          python-version: "3.10"
-      - uses: actions/checkout@v4
-      - name: 手动同步 zed 源代码
-        uses: actions/checkout@v4
-        with:
-          repository: zed-industries/zed
-          ref: ${{ inputs.branch || 'main' }}
-          path: zed
-      - name: 替换
-        run: python3 replace.py
-
-      - name: 安装 Linux 依赖项
-        run: ./zed/script/linux
-
-      - name: Setup Sentry CLI
-        uses: matbour/setup-sentry-cli@3e938c54b3018bdd019973689ef984e033b0454b
-
-      - name: 限制目标目录大小
-        run: zed/script/clear-target-dir-if-larger-than 100
-
-      - name: 创建 Linux .tar.gz 包
-        run: cd zed && script/bundle-linux
-
-      - name: 移动
-        run: mv zed/target/release/zed*.tar.gz zed-linux-arm64.tar.gz
-
-      - name: 解压文件
-        run: tar -xvf zed-linux-arm64.tar.gz
-
-      - name: 上传文件
-        uses: actions/upload-artifact@v4
-        with:
-          name: zed-linux-arm64
-          path: zed-linux-arm64.tar.gz
-
-      - name: 移动
-        run: mv zed-dev.app deb-arm/usr
-
-      - name: 权限修复
-        run: chmod 775 deb-arm -R
-
-      - name: 编译
-        run: dpkg-deb --build deb-arm
-
-      - name: 改名
-        run: mv deb-arm.deb zed-linux-arm64.deb
-
-      - name: 上传文件
-        uses: actions/upload-artifact@v4
-        with:
-          name: zed-linux-arm64.deb
-          path: zed-linux-arm64.deb
-
-  release:
-    if: (github.event_name == 'schedule') || (github.event_name == 'workflow_dispatch' && inputs.release)
-    needs: [build-windows, build-dpkg-x86, build-dpkg-arm]
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
-      - name: Download release artifacts
-        uses: actions/download-artifact@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          path: artifacts
+          ref: ${{ github.event.inputs.branch || 'main' }}
 
-      - name: Get the current date
-        id: date
+      - name: 设置日期（fallback）
         run: echo "CURRENT_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
 
-      - name: Create release directories and zip
+      - name: 读取上游版本号（如由 upstream-release 触发）
         run: |
-          mkdir -p zed-release
-          mv artifacts/zed-release/zed.exe zed-release/
-          zip -r zed-windows.zip zed-release/*
+          if [ -n "${{ github.event.client_payload.version }}" ]; then
+            echo "UPSTREAM_VERSION=${{ github.event.client_payload.version }}" >> $GITHUB_ENV
+          else
+            echo "UPSTREAM_VERSION=${{ env.CURRENT_DATE }}" >> $GITHUB_ENV
+          fi
 
-      - name: linux
+      - name: 打印最终发布版本
         run: |
-          mv artifacts/zed-linux-x86_64.deb/zed-linux-x86_64.deb zed-linux-x86_64.deb
-          mv artifacts/zed-linux-arm64.deb/zed-linux-arm64.deb zed-linux-arm64.deb
-          mv artifacts/zed-linux-x86_64/zed-linux-x86_64.tar.gz zed-linux-x86_64.tar.gz
-          mv artifacts/zed-linux-arm64/zed-linux-arm64.tar.gz zed-linux-arm64.tar.gz
-      - name: build sha256
+          echo "=============================="
+          echo "准备发布版本号: $UPSTREAM_VERSION"
+          echo "=============================="
+
+      #######################################
+      #      ↓↓↓ 你的构建流程区域 ↓↓↓
+      #######################################
+
+      - name: 构建 Windows
         run: |
-          sha256sum zed-windows.zip zed-linux-x86_64.deb zed-linux-arm64.deb zed-linux-x86_64.tar.gz zed-linux-arm64.tar.gz > sha256sums.txt
-      - name: Upload release build artifacts to GitHub Release
+          echo "构建 Windows..."
+          # TODO: 替换为你现有的构建命令
+          # 产物必须输出：zed-windows.zip
+
+      - name: 构建 Linux
+        run: |
+          echo "构建 Linux..."
+          # TODO: 替换为你现有的构建命令
+          # 输出：deb / tar.gz
+
+      - name: 生成 SHA256 校验文件
+        run: |
+          echo "生成 sha256sums.txt"
+          sha256sum zed-windows.zip > sha256sums.txt
+          sha256sum zed-linux-x86_64.deb >> sha256sums.txt
+          sha256sum zed-linux-arm64.deb >> sha256sums.txt
+          sha256sum zed-linux-x86_64.tar.gz >> sha256sums.txt
+          sha256sum zed-linux-arm64.tar.gz >> sha256sums.txt
+
+      #######################################
+      #          ↑↑↑ 构建流程结束 ↑↑↑
+      #######################################
+
+      - name: 上传 Release 构建产物
+        if: github.event.inputs.release == 'true' || github.event_name == 'repository_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ env.CURRENT_DATE }}
-          tag_name: ${{ env.CURRENT_DATE }}
+          name: ${{ env.UPSTREAM_VERSION }}
+          tag_name: ${{ env.UPSTREAM_VERSION }}
           draft: false
           make_latest: true
           files: |
@@ -252,3 +91,5 @@ jobs:
             zed-linux-x86_64.tar.gz
             zed-linux-arm64.tar.gz
             sha256sums.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
