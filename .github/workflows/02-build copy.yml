@@ -145,11 +145,6 @@ jobs:
       - name: 安装 Rust（MSVC）
         uses: dtolnay/rust-toolchain@stable
 
-      - name: 启用 cargo 增量编译
-        shell: pwsh
-        run: |
-          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_INCREMENTAL=1"
-
       - name: 启用 Rust 多线程优化
         shell: pwsh
         run: |
