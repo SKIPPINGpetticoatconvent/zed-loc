@@ -119,14 +119,19 @@ jobs:
           New-Item -ItemType Directory -Force -Path C:\cargo
           Add-Content -Path $env:GITHUB_ENV -Value "CARGO_HOME=C:\cargo"
 
-      - name: Cargo 缓存（Windows）
+      - name: 禁用 wasmtime（必须在 Rust toolchain 之前）
+        shell: pwsh
+        run: |
+          Add-Content -Path $env:GITHUB_ENV -Value "ZED_DISABLE_WASMTIME=1"
+
+      - name: Cargo 缓存
         uses: actions/cache@v3
         with:
           path: |
             C:\cargo\registry
             C:\cargo\git
             C:\z\target
-          key: cargo-win-${{ hashFiles('**/*.rs') }}
+          key: cargo-win-${{ hashFiles('C:/z/Cargo.lock') }}
           restore-keys: cargo-win-
 
       - name: 安装 sccache
@@ -140,13 +145,6 @@ jobs:
           Add-Content -Path $env:GITHUB_ENV -Value "CARGO_INCREMENTAL=0"
           Add-Content -Path $env:GITHUB_ENV -Value "RUSTFLAGS=-Ccodegen-units=16"
 
-      - name: sccache 缓存
-        uses: actions/cache@v3
-        with:
-          path: C:\Users\runneradmin\AppData\Local\sccache
-          key: sccache-win
-          restore-keys: sccache-win
-
       - name: 启动 sccache
         run: sccache --start-server
 
@@ -155,29 +153,23 @@ jobs:
         with:
           name: patched-zed-src
 
-      - name: 解压 patched-zed-src
+      - name: 解压到 C:\z（保持短路径）
         run: |
-          mkdir zed
-          7z x patched-zed-src.7z -ozed
+          Remove-Item -Recurse -Force C:\z -ErrorAction SilentlyContinue
+          7z x patched-zed-src.7z -oC:\z
 
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: 禁用 wasmtime（Windows 必须）
-        shell: pwsh
+      - name: 构建 Windows
         run: |
-          Add-Content -Path $env:GITHUB_ENV -Value "ZED_DISABLE_WASMTIME=1"
+          cd C:\z
+          cargo build --release --jobs 1
+          mkdir C:\winpkg
+          Copy-Item target\release\zed.exe C:\winpkg
+          powershell Compress-Archive -Path C:\winpkg\* -DestinationPath zed-windows.zip
 
-      - name: 编译 Windows（MSVC）
-        run: |
-          cd zed
-          cargo build --release --jobs 2
-          cd ..
-          mkdir winpkg
-          Copy-Item zed\target\release\zed.exe winpkg\
-          powershell Compress-Archive -Path winpkg/* -DestinationPath zed-windows.zip
-
-      - name: 上传 Windows 产物
+      - name: 上传
         uses: actions/upload-artifact@v4
         with:
           name: zed-windows
@@ -208,6 +200,7 @@ jobs:
             libx11-xcb-dev \
             libxkbfile-dev \
             libgtk-3-dev \
+            libxcb-xinput-dev \
             libwayland-dev \
             libxkbcommon-dev \
             libxkbcommon-x11-dev \
