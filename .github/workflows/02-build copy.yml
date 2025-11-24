@@ -18,9 +18,9 @@ on:
     - cron: "0 15 * * *"
 
 jobs:
-  ################################################################################
+  ###############################################################################
   # 1. Linux 初始化（生成版本号）
-  ################################################################################
+  ###############################################################################
   build-all:
     runs-on: ubuntu-latest
     outputs:
@@ -42,22 +42,20 @@ jobs:
           fi
           echo "版本号：${{ steps.version.outputs.v }}"
 
-  ################################################################################
-  # 2. Windows：翻译脚本 + 编译 Windows 版（短路径 + 强缓存）
-  ################################################################################
+  ###############################################################################
+  # 2. Windows：翻译 + 打包 + 生成 patched-zed-src.7z
+  ###############################################################################
   build-windows:
     runs-on: windows-latest
     needs: build-all
 
     steps:
-      # 0. 设置 CARGO_HOME
-      - name: 缩短 CARGO_HOME
+      - name: 设置 CARGO_HOME
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path C:\cargo
           Add-Content -Path $env:GITHUB_ENV -Value "CARGO_HOME=C:\cargo"
 
-      # 1. Cargo 缓存（target + registry + git）
       - name: Cargo 缓存（Windows）
         uses: actions/cache@v3
         with:
@@ -65,11 +63,10 @@ jobs:
             C:\cargo\registry
             C:\cargo\git
             C:\z\target
-          key: cargo-win-target-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-win-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            cargo-win-target-
+            cargo-win-
 
-      # 2. pip 缓存
       - name: pip 缓存
         uses: actions/cache@v3
         with:
@@ -78,35 +75,34 @@ jobs:
           restore-keys: |
             pip-win
 
-      # 2.1 sccache 安装与缓存
       - name: 安装 sccache
         shell: pwsh
         run: choco install sccache -y
 
-      - name: 配置 sccache 环境变量
+      - name: 配置 sccache
         shell: pwsh
         run: |
           Add-Content -Path $env:GITHUB_ENV -Value "RUSTC_WRAPPER=sccache"
+          Add-Content -Path $env:GITHUB_ENV -Value "CARGO_INCREMENTAL=0"
+          Add-Content -Path $env:GITHUB_ENV -Value "RUSTFLAGS=-Ccodegen-units=16"
 
       - name: 缓存 sccache
         uses: actions/cache@v3
         with:
           path: C:\Users\runneradmin\AppData\Local\sccache
-          key: sccache-win-${{ hashFiles('**/*.rs') }}
+          key: sccache-win
           restore-keys: |
-            sccache-win-
+            sccache-win
 
-      - name: 启动 sccache server
+      - name: 启动 sccache
         run: sccache --start-server
 
-      # 3. 克隆仓库和依赖
       - name: Checkout zed-loc
         uses: actions/checkout@v4
 
-      - name: 克隆 Zed（短路径）
+      - name: 克隆 Zed 源码（短路径）
         run: git clone https://github.com/zed-industries/zed.git C:\z
 
-      # 4. Python 安装
       - name: 安装 Python
         uses: actions/setup-python@v4
         with:
@@ -115,7 +111,6 @@ jobs:
       - name: 安装 Python 依赖
         run: pip install pyyaml
 
-      # 5. 翻译脚本
       - name: 复制翻译脚本
         shell: pwsh
         run: |
@@ -125,38 +120,31 @@ jobs:
           Copy-Item del.yaml C:\z\
           Copy-Item zh.json C:\z\
 
-      # 6. 执行翻译
-      - name: 执行 extract
+      - name: 执行翻译
         run: |
           cd C:\z
           python extract.py
-
-      - name: 执行 delete
-        run: |
-          cd C:\z
           python delete.py
-
-      - name: 执行 replace
-        run: |
-          cd C:\z
           python replace.py
 
-      # 7. Rust 环境配置
-      - name: 安装 Rust（MSVC）
+      - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: 启用 Rust 多线程优化
-        shell: pwsh
+      - name: 使用 7zip 压缩翻译后源码
         run: |
-          Add-Content -Path $env:GITHUB_ENV -Value "RUSTFLAGS=-Ccodegen-units=16"
+          7z a patched-zed-src.7z C:\z\*
 
-      # 8. 构建 Windows
+      - name: 上传 patched-zed-src
+        uses: actions/upload-artifact@v4
+        with:
+          name: patched-zed-src
+          path: patched-zed-src.7z
+
       - name: 构建 Windows（MSVC）
         run: |
           cd C:\z
           cargo build --release --jobs 16
 
-      # 9. 打包 Windows
       - name: 打包 Windows 产物
         run: |
           mkdir winpkg
@@ -169,15 +157,15 @@ jobs:
           name: zed-windows
           path: zed-windows.zip
 
-  ################################################################################
-  # 3. Linux：使用翻译后的源码构建
-  ################################################################################
+  ###############################################################################
+  # 3. Linux：用汉化源码构建
+  ###############################################################################
   build-linux:
     runs-on: ubuntu-latest
     needs: build-windows
 
     steps:
-      - name: 下载已汉化源码（7z）
+      - name: 下载 patched-zed-src
         uses: actions/download-artifact@v4
         with:
           name: patched-zed-src
@@ -185,7 +173,7 @@ jobs:
       - name: 安装 p7zip
         run: sudo apt install p7zip-full -y
 
-      - name: 解压 7z（汉化后源码）
+      - name: 解压
         run: |
           mkdir zed
           7z x patched-zed-src.7z -ozed
@@ -204,7 +192,7 @@ jobs:
           restore-keys: |
             cargo-linux-
 
-      - name: 构建 Linux（使用汉化源码）
+      - name: 构建 Linux
         run: |
           cd zed
           cargo build --release
@@ -213,15 +201,29 @@ jobs:
           cp zed/target/release/zed linuxpkg/
           tar -czvf zed-linux-x86_64.tar.gz linuxpkg
 
-  ################################################################################
-  # 4. macOS：使用翻译后的源码构建
-  ################################################################################
+      - name: 构建 deb
+        run: |
+          mkdir -p debpkg/usr/bin
+          cp zed/target/release/zed debpkg/usr/bin/zed
+          dpkg-deb --build debpkg zed-linux-x86_64.deb
+
+      - name: 上传 Linux 包
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-linux
+          path: |
+            zed-linux-x86_64.tar.gz
+            zed-linux-x86_64.deb
+
+  ###############################################################################
+  # 4. macOS：用汉化源码构建
+  ###############################################################################
   build-macos:
     runs-on: macos-latest
     needs: build-windows
 
     steps:
-      - name: 下载已汉化源码（7z）
+      - name: 下载 patched-zed-src
         uses: actions/download-artifact@v4
         with:
           name: patched-zed-src
@@ -229,7 +231,7 @@ jobs:
       - name: 安装 p7zip
         run: brew install p7zip
 
-      - name: 解压 7z（汉化后源码）
+      - name: 解压
         run: |
           mkdir zed
           7z x patched-zed-src.7z -ozed
@@ -248,7 +250,7 @@ jobs:
           restore-keys: |
             cargo-macos-
 
-      - name: 构建 macOS（使用汉化源码）
+      - name: 构建 macOS
         run: |
           cd zed
           cargo build --release
@@ -257,9 +259,15 @@ jobs:
           cp zed/target/release/zed macpkg/
           tar -czvf zed-macos.tar.gz macpkg/
 
-  ################################################################################
+      - name: 上传 Mac 包
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-macos
+          path: zed-macos.tar.gz
+
+  ###############################################################################
   # 5. Release
-  ################################################################################
+  ###############################################################################
   release:
     runs-on: ubuntu-latest
     needs:
