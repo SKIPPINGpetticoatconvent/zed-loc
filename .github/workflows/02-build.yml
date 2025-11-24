@@ -50,12 +50,18 @@ jobs:
     needs: build-all
 
     steps:
-      - name: 缩短 CARGO_HOME（必须在 Rust 之前）
+      ############################################################################
+      # 0. 设置 CARGO_HOME（必须在 toolchain 之前）
+      ############################################################################
+      - name: 缩短 CARGO_HOME
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path C:\cargo
           Add-Content -Path $env:GITHUB_ENV -Value "CARGO_HOME=C:\cargo"
 
+      ############################################################################
+      # 1. 最大化 Cargo 缓存（target + registry + git）
+      ############################################################################
       - name: Cargo 缓存（Windows）
         uses: actions/cache@v3
         with:
@@ -63,10 +69,13 @@ jobs:
             C:\cargo\registry
             C:\cargo\git
             C:\z\target
-          key: cargo-win-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-win-target-${{ hashFiles('C:\z\Cargo.lock', '**/Cargo.lock') }}
           restore-keys: |
-            cargo-win-
+            cargo-win-target-
 
+      ############################################################################
+      # 2. pip 缓存
+      ############################################################################
       - name: pip 缓存
         uses: actions/cache@v3
         with:
@@ -75,12 +84,18 @@ jobs:
           restore-keys: |
             pip-win
 
+      ############################################################################
+      # 3. 克隆仓库和依赖
+      ############################################################################
       - name: Checkout zed-loc
         uses: actions/checkout@v4
 
-      - name: 克隆 Zed（短路径 C:\z）
+      - name: 克隆 Zed（短路径）
         run: git clone https://github.com/zed-industries/zed.git C:\z
 
+      ############################################################################
+      # 4. 安装 Python
+      ############################################################################
       - name: 安装 Python
         uses: actions/setup-python@v4
         with:
@@ -89,7 +104,10 @@ jobs:
       - name: 安装 Python 依赖
         run: pip install pyyaml
 
-      - name: 复制翻译脚本到 C:\z
+      ############################################################################
+      # 5. 复制翻译脚本到 C:\z
+      ############################################################################
+      - name: 复制翻译脚本
         shell: pwsh
         run: |
           Copy-Item extract.py C:\z\
@@ -98,6 +116,9 @@ jobs:
           Copy-Item del.yaml C:\z\
           Copy-Item zh.json C:\z\
 
+      ############################################################################
+      # 6. 执行翻译脚本
+      ############################################################################
       - name: 执行 extract
         run: |
           cd C:\z
@@ -113,27 +134,31 @@ jobs:
           cd C:\z
           python replace.py
 
+      ############################################################################
+      # 7. 安装 Rust + 启用最大化增量构建
+      ############################################################################
       - name: 安装 Rust（MSVC）
         uses: dtolnay/rust-toolchain@stable
 
-      - name: 安装 7zip（Windows）
-        run: choco install 7zip -y
+      - name: 启用 cargo 增量编译
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "CARGO_INCREMENTAL=1"
 
-      - name: 使用 7zip 压缩已汉化的源码
-        run: |
-          7z a patched-zed-src.7z C:\z\*
+      - name: 启用 Rust 多线程优化
+        shell: pwsh
+        run: Add-Content -Path $env:RUSTFLAGS -Value "-Ccodegen-units=16 -Cincremental"
 
-      - name: 上传汉化后的源码（7z）
-        uses: actions/upload-artifact@v4
-        with:
-          name: patched-zed-src
-          path: patched-zed-src.7z
-
-      - name: 构建 Windows 版本
+      ############################################################################
+      # 8. 构建 Windows（二进制增量缓存 + 多线程）
+      ############################################################################
+      - name: 构建 Windows（MSVC）
         run: |
           cd C:\z
-          cargo build --release
+          cargo build --release --jobs 16
 
+      ############################################################################
+      # 9. 打包 Windows 产物
+      ############################################################################
       - name: 打包 Windows 产物
         run: |
           mkdir winpkg
