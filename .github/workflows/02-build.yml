@@ -1,4 +1,4 @@
-name: 02 汉化发行（全流程一键自动化｜支持交叉编译 Windows）
+name: 02 汉化发行（全流程一键自动化｜Windows 短路径构建）
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         type: boolean
       branch:
         type: string
-        default: ma在
+        default: main
         description: "分支名"
 
   repository_dispatch:
@@ -19,30 +19,32 @@ on:
 
 jobs:
   ################################################################################
-  # 1. 全局初始化（Linux）
+  # 1. Linux 全局初始化
   ################################################################################
   build-all:
     runs-on: ubuntu-latest
-
+    outputs:
+      version: ${{ steps.version.outputs.v }}
     steps:
       - name: Checkout zed-loc
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch || 'main' }}
 
-      - name: 设置版本号
+      - id: version
+        name: 设置版本号
         run: |
           if [ -n "${{ github.event.client_payload.version }}" ]; then
-            echo "UPSTREAM_VERSION=${{ github.event.client_payload.version }}" >> $GITHUB_ENV
+            echo "v=${{ github.event.client_payload.version }}" >> $GITHUB_OUTPUT
           else
-            echo "UPSTREAM_VERSION=$(date +'%Y%m%d')" >> $GITHUB_ENV
+            echo "v=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
           fi
-          echo "版本号：$UPSTREAM_VERSION"
+          echo "版本号：${{ steps.version.outputs.v }}"
 
   ################################################################################
-  # 2. Windows job（仅词条处理，不构建 Windows 版本）
+  # 2. Windows：词条处理 + Windows 编译（短路径 C:\z）
   ################################################################################
-  process-windows-strings:
+  build-windows:
     runs-on: windows-latest
     needs: build-all
 
@@ -50,8 +52,8 @@ jobs:
       - name: Checkout zed-loc
         uses: actions/checkout@v4
 
-      - name: 克隆 Zed 源码
-        run: git clone https://github.com/zed-industries/zed.git
+      - name: 克隆 Zed 源码到短路径 C:\z（避免路径过长）
+        run: git clone https://github.com/zed-industries/zed.git C:\z
 
       - name: 安装 Python
         uses: actions/setup-python@v4
@@ -61,128 +63,144 @@ jobs:
       - name: 安装 Python 依赖
         run: pip install pyyaml
 
-      - name: 提取词条
-        run: python extract.py
+      - name: 将 zed-loc 词条脚本复制到 C:\z
+        run: |
+          Copy-Item -Recurse -Force extract.py C:\z\
+          Copy-Item -Recurse -Force delete.py C:\z\
+          Copy-Item -Recurse -Force replace.py C:\z\
+          Copy-Item -Recurse -Force del.yaml C:\z\
+          Copy-Item -Recurse -Force strings.json C:\z\
 
-      - name: 删除多余词条
-        run: python delete.py
+      - name: 执行 extract
+        run: |
+          cd C:\z
+          python extract.py
 
-      - name: 替换词条
-        run: python replace.py
+      - name: 执行 delete
+        run: |
+          cd C:\z
+          python delete.py
 
-      - name: 安装 7zip（Windows）
-        run: choco install 7zip -y
+      - name: 执行 replace
+        run: |
+          cd C:\z
+          python replace.py
 
-      - name: 使用 7zip 压缩 patched 源码
-        run: 7z a patched-zed-src.7z zed
+      - name: 安装 Rust（MSVC）
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: 上传 patched 源码
+      - name: 编译 Windows 版本（MSVC）
+        run: |
+          cd C:\z
+          cargo build --release
+
+      - name: 打包 Windows 产物
+        run: |
+          mkdir winpkg
+          Copy-Item C:\z\target\release\zed.exe winpkg\
+          powershell Compress-Archive -Path winpkg/* -DestinationPath zed-windows.zip
+
+      - name: 上传 Windows 构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: patched-zed-src
-          path: patched-zed-src.7z
+          name: zed-windows
+          path: zed-windows.zip
 
   ################################################################################
-  # 3. Linux job（交叉编译 Windows + Linux 二进制 + deb）
+  # 3. Linux：原生 Linux tar.gz + deb
   ################################################################################
   build-linux:
     runs-on: ubuntu-latest
-    needs: process-windows-strings
+    needs: build-windows
 
     steps:
-      - name: 下载 patched 源码
+      - name: 下载 patched 源码（已翻译）
         uses: actions/download-artifact@v4
         with:
           name: patched-zed-src
 
-      - name: 安装 p7zip（Linux）
+      - name: 安装 p7zip
         run: sudo apt install p7zip-full -y
 
       - name: 解压 patched 源码
-        run: 7z x patched-zed-src.7z
-
-      - name: 安装 Rust（含 Windows 交叉编译工具链）
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: |
-            x86_64-pc-windows-gnu
-
-      - name: 构建 Windows 版本（交叉编译）
         run: |
-          cd zed
-          cargo build --release --target x86_64-pc-windows-gnu
-          cd ..
-          mkdir winbuild
-          cp zed/target/x86_64-pc-windows-gnu/release/zed.exe winbuild/
-          zip -r zed-windows.zip winbuild
-
-      - name: 构建 Linux 版本
-        run: |
-          cd zed
-          cargo build --release
-          cd ..
-          mkdir linux-x86_64
-          cp zed/target/release/zed linux-x86_64/
-          tar -czvf zed-linux-x86_64.tar.gz linux-x86_64
-
-      - name: 构建 deb
-        run: |
-          mkdir -p debpkg/usr/bin
-          cp linux-x86_64/zed debpkg/usr/bin/zed
-          dpkg-deb --build debpkg zed-linux-x86_64.deb
-
-      - name: 上传 Linux + Windows 构建产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-windows-builds
-          path: |
-            zed-windows.zip
-            zed-linux-x86_64.tar.gz
-            zed-linux-x86_64.deb
-
-  ################################################################################
-  # 4. macOS job
-  ################################################################################
-  build-macos:
-    runs-on: macos-latest
-    needs: process-windows-strings
-
-    steps:
-      - name: 下载 patched 源码
-        uses: actions/download-artifact@v4
-        with:
-          name: patched-zed-src
-
-      - name: 安装 7zip（macOS）
-        run: brew install p7zip
-
-      - name: 解压 patched 源码
-        run: 7z x patched-zed-src.7z
+          7z x patched-zed-src.7z
+          mv zed patched-zed # 以免冲突
+          mv patched-zed zed
 
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: 构建 macOS 版本
+      - name: 构建 Linux 版本（已翻译）
         run: |
           cd zed
           cargo build --release
           cd ..
-          mkdir macbuild
-          cp zed/target/release/zed macbuild/
-          tar -czvf zed-macos.tar.gz macbuild/
+          mkdir linuxpkg
+          cp zed/target/release/zed linuxpkg/
+          tar -czvf zed-linux-x86_64.tar.gz linuxpkg
 
-      - name: 上传 mac 构建产物
+      - name: 构建 deb 包（已翻译）
+        run: |
+          mkdir -p debpkg/usr/bin
+          cp zed/target/release/zed debpkg/usr/bin/zed
+          dpkg-deb --build debpkg zed-linux-x86_64.deb
+
+      - name: 上传 Linux 构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: mac-build
+          name: zed-linux
+          path: |
+            zed-linux-x86_64.tar.gz
+            zed-linux-x86_64.deb
+
+  ################################################################################
+  # 4. macOS：原生构建
+  ################################################################################
+  build-macos:
+    runs-on: macos-latest
+    needs: build-windows
+
+    steps:
+      - name: 下载 patched 源码（已翻译）
+        uses: actions/download-artifact@v4
+        with:
+          name: patched-zed-src
+
+      - name: 安装 7zip
+        run: brew install p7zip
+
+      - name: 解压 patched 源码
+        run: |
+          7z x patched-zed-src.7z
+          mv zed patched-zed
+          mv patched-zed zed
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 构建 macOS 版本（已翻译）
+        run: |
+          cd zed
+          cargo build --release
+          cd ..
+          mkdir macpkg
+          cp zed/target/release/zed macpkg/
+          tar -czvf zed-macos.tar.gz macpkg/
+
+      - name: 上传 macOS 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-macos
           path: zed-macos.tar.gz
 
   ################################################################################
-  # 5. Release job
+  # 5. Release 汇总发布
   ################################################################################
   release:
     runs-on: ubuntu-latest
     needs:
+      - build-windows
       - build-linux
       - build-macos
 
@@ -192,21 +210,21 @@ jobs:
 
       - name: 生成 sha256
         run: |
-          sha256sum linux-windows-builds/zed-windows.zip > sha256sums.txt
-          sha256sum linux-windows-builds/zed-linux-x86_64.tar.gz >> sha256sums.txt
-          sha256sum linux-windows-builds/zed-linux-x86_64.deb >> sha256sums.txt
-          sha256sum mac-build/zed-macos.tar.gz >> sha256sums.txt
+          sha256sum zed-windows/zed-windows.zip > sha256sums.txt
+          sha256sum zed-linux/zed-linux-x86_64.tar.gz >> sha256sums.txt
+          sha256sum zed-linux/zed-linux-x86_64.deb >> sha256sums.txt
+          sha256sum zed-macos/zed-macos.tar.gz >> sha256sums.txt
 
       - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ needs.build-all.outputs.UPSTREAM_VERSION }}
-          tag_name: ${{ needs.build-all.outputs.UPSTREAM_VERSION }}
+          name: ${{ needs.build-all.outputs.version }}
+          tag_name: ${{ needs.build-all.outputs.version }}
           files: |
-            linux-windows-builds/zed-windows.zip
-            linux-windows-builds/zed-linux-x86_64.tar.gz
-            linux-windows-builds/zed-linux-x86_64.deb
-            mac-build/zed-macos.tar.gz
+            zed-windows/zed-windows.zip
+            zed-linux/zed-linux-x86_64.tar.gz
+            zed-linux/zed-linux-x86_64.deb
+            zed-macos/zed-macos.tar.gz
             sha256sums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
