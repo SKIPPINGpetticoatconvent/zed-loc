@@ -69,6 +69,7 @@ jobs:
           Copy-Item -Recurse -Force delete.py C:\z\
           Copy-Item -Recurse -Force replace.py C:\z\
           Copy-Item -Recurse -Force del.yaml C:\z\
+          Copy-Item -Recurse -Force zh.json C:\z\
 
       - name: 提取词条（生成 strings.json）
         run: |
