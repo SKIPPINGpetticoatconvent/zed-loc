@@ -22,7 +22,7 @@ jobs:
       - name: 克隆 Scoop bucket
         uses: actions/checkout@v4
         with:
-          repository: SKIPPINGpetticoatconvent/scoop-bucket
+          repository: SKIPPINGpetticoatconvent/zed-loc-scoop-bucket
           token: ${{ secrets.GITHUB_TOKEN }}
           path: bucket
 
