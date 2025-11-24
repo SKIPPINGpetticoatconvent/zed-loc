@@ -70,9 +70,11 @@ jobs:
       - name: 替换词条
         run: python replace.py
 
-      - name: 打包处理后的源码
-        run: |
-          powershell Compress-Archive -Path zed -DestinationPath patched-zed-src.zip
+      - name: 安装 7zip（Windows）
+        run: choco install 7zip -y
+
+      - name: 使用 7zip 压缩 patched 源码
+        run: 7z a patched-zed-src.7z zed
 
       - name: 上传 patched 源码
         uses: actions/upload-artifact@v4
@@ -93,8 +95,11 @@ jobs:
         with:
           name: patched-zed-src
 
+      - name: 安装 p7zip（Linux）
+        run: sudo apt install p7zip-full -y
+
       - name: 解压 patched 源码
-        run: unzip patched-zed-src.zip -d .
+        run: 7z x patched-zed-src.7z
 
       - name: 安装 Rust（含 Windows 交叉编译工具链）
         uses: dtolnay/rust-toolchain@stable
