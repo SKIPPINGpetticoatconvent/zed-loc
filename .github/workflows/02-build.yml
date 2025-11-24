@@ -83,6 +83,10 @@ jobs:
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: 启用 Windows 长路径支持
+        run: |
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1
+
       - name: 提取词条
         run: python extract.py
 
