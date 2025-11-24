@@ -222,7 +222,11 @@ jobs:
       - name: 使用 Gold 链接器（修复 rust-lld 崩溃）
         run: |
           sudo apt install -y binutils-gold
-          echo "RUSTFLAGS=-C link-arg=-fuse-ld=gold -Clto=thin -Clink-arg=-Wl,--no-threads" >> $GITHUB_ENV
+          # 1. 设置 Linker (保留在 RUSTFLAGS 中)
+          echo "RUSTFLAGS=-C link-arg=-fuse-ld=gold -Clink-arg=-Wl,--no-threads" >> $GITHUB_ENV
+
+          # 2. 设置 LTO (使用专用变量，避免影响构建脚本)
+          echo "CARGO_PROFILE_RELEASE_LTO=thin" >> $GITHUB_ENV
 
       - name: 构建 Linux
         run: |
