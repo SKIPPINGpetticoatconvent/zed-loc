@@ -1,9 +1,0 @@
-{
-  "version": "0.0.0",
-  "description": "Zed Editor 汉化版本（自动跟随官方）",
-  "homepage": "https://github.com/SKIPPINGpetticoatconvent/zed-loc",
-  "license": "MIT",
-  "url": "https://github.com/SKIPPINGpetticoatconvent/zed-loc/releases/download/0.0.0/zed-windows.zip",
-  "hash": "0000000000000000000000000000000000000000000000000000000000000000",
-  "bin": "zed.exe"
-}

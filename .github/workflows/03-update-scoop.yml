@@ -1,4 +1,4 @@
-name: 3.Update Scoop Manifest
+name: 03 Update Scoop Manifest
 
 on:
   release:
@@ -9,36 +9,37 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Download zed-windows.zip
+      - name: 下载 Windows 构建产物
         run: |
-          curl -L "${{ github.event.release.assets[0].browser_download_url }}" -o zed-windows.zip
+          $url = "${{ github.event.release.assets[0].browser_download_url }}"
+          Invoke-WebRequest -Uri $url -OutFile zed-windows.zip
 
-      - name: Generate SHA256
+      - name: 生成 SHA256
         run: |
           $sha = (Get-FileHash zed-windows.zip -Algorithm SHA256).Hash
-          echo "SHA256=$sha" >> $GITHUB_ENV
+          echo "SHA256=$sha" >> $env:GITHUB_ENV
 
-      - name: Checkout bucket
+      - name: 克隆 Scoop bucket
         uses: actions/checkout@v4
         with:
           repository: SKIPPINGpetticoatconvent/scoop-bucket
-          path: bucket
           token: ${{ secrets.GITHUB_TOKEN }}
+          path: bucket
 
-      - name: Update manifest
+      - name: 更新 zed-loc.json
         run: |
           $file = "bucket/zed-loc.json"
           $json = Get-Content $file | ConvertFrom-Json
           $json.version = "${{ github.event.release.tag_name }}"
           $json.url = "${{ github.event.release.assets[0].browser_download_url }}"
           $json.hash = "${{ env.SHA256 }}"
-          $json | ConvertTo-Json -Depth 10 | Out-File $file -Encoding utf8
+          $json | ConvertTo-Json -Depth 10 | Out-File $file -Encoding UTF8
 
-      - name: Push update
+      - name: 推送到 scoop bucket
         run: |
           cd bucket
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add zed-loc.json
-          git commit -m "Update zed-loc to ${{ github.event.release.tag_name }}"
+          git commit -m "update to ${{ github.event.release.tag_name }}"
           git push

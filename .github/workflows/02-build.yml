@@ -1,7 +1,6 @@
-name: 2.汉化发行
+name: 02 汉化发行（全流程一键自动化）
 
 on:
-  # 手动触发
   workflow_dispatch:
     inputs:
       release:
@@ -12,84 +11,202 @@ on:
         default: main
         description: "分支名"
 
-  # 自动同步上游版本
   repository_dispatch:
     types: [upstream-release]
 
-  # 定时构建（每天北京时间 23 点）
   schedule:
-    - cron: "0 15 * * *" # 15:00 UTC = 23:00 北京时间
+    - cron: "0 15 * * *" # 北京时间 23:00 自动检查构建
 
 jobs:
-  build:
+  ################################################################################
+  #                               统一构建流程                                   #
+  ################################################################################
+  build-all:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout zed-loc
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch || 'main' }}
 
-      - name: 设置日期（fallback）
-        run: echo "CURRENT_DATE=$(date +'%Y%m%d')" >> $GITHUB_ENV
-
-      - name: 读取上游版本号（如由 upstream-release 触发）
+      - name: 设置版本号
         run: |
           if [ -n "${{ github.event.client_payload.version }}" ]; then
             echo "UPSTREAM_VERSION=${{ github.event.client_payload.version }}" >> $GITHUB_ENV
           else
-            echo "UPSTREAM_VERSION=${{ env.CURRENT_DATE }}" >> $GITHUB_ENV
+            echo "UPSTREAM_VERSION=$(date +'%Y%m%d')" >> $GITHUB_ENV
           fi
+          echo "当前版本：$UPSTREAM_VERSION"
 
-      - name: 打印最终发布版本
+      - name: 安装依赖 (Python / Rust / Git)
         run: |
-          echo "=============================="
-          echo "准备发布版本号: $UPSTREAM_VERSION"
-          echo "=============================="
+          sudo apt update -y
+          sudo apt install -y python3 python3-pip git rustup
+          rustup default stable
 
-      #######################################
-      #      ↓↓↓ 你的构建流程区域 ↓↓↓
-      #######################################
+      - name: 克隆 Zed 官方源码
+        run: |
+          git clone https://github.com/zed-industries/zed.git
+          echo "官方源码克隆完成"
+
+      ################################################################################
+      #                         自动提取 / 删除 / 替换词条                            #
+      ################################################################################
+
+      - name: （Windows-only）提取词条准备
+        run: echo "词条提取只能在 Windows 执行，使用 matrix job 处理"
+
+  ################################################################################
+  # Windows 词条处理 + Windows 构建
+  ################################################################################
+  build-windows:
+    runs-on: windows-latest
+    needs: build-all
+
+    steps:
+      - name: Checkout zed-loc
+        uses: actions/checkout@v4
+
+      - name: 克隆 Zed 官方源码
+        run: git clone https://github.com/zed-industries/zed.git
+
+      - name: 安装 Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.x"
+
+      - name: 安装 Rust
+        uses: actions/setup-rust@v1
+
+      - name: 提取词条
+        run: python extract.py
+
+      - name: 删除多余词条
+        run: python delete.py
+
+      - name: 替换词条
+        run: python replace.py
 
       - name: 构建 Windows
         run: |
-          echo "构建 Windows..."
-          # TODO: 替换为你现有的构建命令
-          # 产物必须输出：zed-windows.zip
+          cd zed
+          cargo build --release
+          cd ..
+          mkdir output
+          cp zed/target/release/zed.exe output/
+          powershell Compress-Archive -Path output/* -DestinationPath zed-windows.zip
 
-      - name: 构建 Linux
+      - name: 上传 Windows 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-windows
+          path: zed-windows.zip
+
+  ################################################################################
+  # Linux / deb / tar.gz 构建
+  ################################################################################
+  build-linux:
+    runs-on: ubuntu-latest
+    needs: build-windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: actions/setup-rust@v1
+
+      - name: 克隆 Zed 官方源码
+        run: git clone https://github.com/zed-industries/zed.git
+
+      - name: 构建 Linux 二进制
         run: |
-          echo "构建 Linux..."
-          # TODO: 替换为你现有的构建命令
-          # 输出：deb / tar.gz
+          cd zed
+          cargo build --release
+          cd ..
+          mkdir linux-build
+          cp zed/target/release/zed linux-build/
+          tar -czvf zed-linux-x86_64.tar.gz linux-build
 
-      - name: 生成 SHA256 校验文件
+      - name: 构建 deb 包
         run: |
-          echo "生成 sha256sums.txt"
-          sha256sum zed-windows.zip > sha256sums.txt
-          sha256sum zed-linux-x86_64.deb >> sha256sums.txt
-          sha256sum zed-linux-arm64.deb >> sha256sums.txt
-          sha256sum zed-linux-x86_64.tar.gz >> sha256sums.txt
-          sha256sum zed-linux-arm64.tar.gz >> sha256sums.txt
+          mkdir debpkg
+          mkdir -p debpkg/usr/bin
+          cp zed-linux-x86_64.tar.gz debpkg/usr/bin/zed
+          dpkg-deb --build debpkg zed-linux-x86_64.deb
 
-      #######################################
-      #          ↑↑↑ 构建流程结束 ↑↑↑
-      #######################################
+      - name: 上传 Linux 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-linux
+          path: |
+            zed-linux-x86_64.tar.gz
+            zed-linux-x86_64.deb
 
-      - name: 上传 Release 构建产物
-        if: github.event.inputs.release == 'true' || github.event_name == 'repository_dispatch'
+  ################################################################################
+  # macOS 构建
+  ################################################################################
+  build-macos:
+    runs-on: macos-latest
+    needs: build-windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust
+        uses: actions/setup-rust@v1
+
+      - name: 克隆 Zed 官方源码
+        run: git clone https://github.com/zed-industries/zed.git
+
+      - name: 构建 macOS
+        run: |
+          cd zed
+          cargo build --release
+          cd ..
+          mkdir mac-build
+          cp zed/target/release/zed mac-build/
+          tar -czvf zed-macos.tar.gz mac-build/
+
+      - name: 上传 macOS 构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-macos
+          path: zed-macos.tar.gz
+
+  ################################################################################
+  # Release + Scoop 更新
+  ################################################################################
+  release:
+    runs-on: ubuntu-latest
+    needs:
+      - build-windows
+      - build-linux
+      - build-macos
+
+    steps:
+      - name: 下载所有构建产物
+        uses: actions/download-artifact@v4
+
+      - name: 生成 SHA256
+        run: |
+          sha256sum zed-windows/zed-windows.zip > sha256sums.txt
+          sha256sum zed-linux/zed-linux-x86_64.tar.gz >> sha256sums.txt
+          sha256sum zed-linux/zed-linux-x86_64.deb >> sha256sums.txt
+          sha256sum zed-macos/zed-macos.tar.gz >> sha256sums.txt
+
+      - name: 发布 Release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ env.UPSTREAM_VERSION }}
-          tag_name: ${{ env.UPSTREAM_VERSION }}
-          draft: false
-          make_latest: true
+          name: ${{ needs.build-all.outputs.UPSTREAM_VERSION }}
+          tag_name: ${{ needs.build-all.outputs.UPSTREAM_VERSION }}
           files: |
-            zed-windows.zip
-            zed-linux-x86_64.deb
-            zed-linux-arm64.deb
-            zed-linux-x86_64.tar.gz
-            zed-linux-arm64.tar.gz
+            zed-windows/zed-windows.zip
+            zed-linux/zed-linux-x86_64.tar.gz
+            zed-linux/zed-linux-x86_64.deb
+            zed-macos/zed-macos.tar.gz
             sha256sums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

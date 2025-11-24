@@ -1,8 +1,8 @@
-name: 1.Sync Upstream Zed Releases
+name: 01 Sync Upstream Zed Releases
 
 on:
   schedule:
-    - cron: "0 */6 * * *" # 每6小时检查一次
+    - cron: "0 */6 * * *" # 每 6 小时检测一次
   workflow_dispatch:
 
 jobs:
@@ -10,20 +10,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Get latest upstream version
+      - name: 获取上游最新版本号
         id: upstream
         run: |
           latest=$(curl -s https://api.github.com/repos/zed-industries/zed/releases/latest | jq -r .tag_name)
           echo "latest=$latest" >> $GITHUB_OUTPUT
 
-      - name: Get local version
+      - name: 获取本地已发布版本号
         id: local
         run: |
-          local=$(curl -s https://api.github.com/repos/SKIPPINGpetticoatconvent/zed-loc/releases/latest | jq -r .tag_name)
+          local=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name)
           echo "local=$local" >> $GITHUB_OUTPUT
 
-      - name: Compare versions
-        id: check
+      - name: 比对版本号
+        id: compare
         run: |
           if [ "${{ steps.upstream.outputs.latest }}" != "${{ steps.local.outputs.local }}" ]; then
             echo "update=true" >> $GITHUB_OUTPUT
@@ -31,12 +31,10 @@ jobs:
             echo "update=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Trigger build workflow
-        if: steps.check.outputs.update == 'true'
+      - name: 触发汉化构建流程
+        if: steps.compare.outputs.update == 'true'
         uses: peter-evans/repository-dispatch@v3
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          repository: SKIPPINGpetticoatconvent/zed-loc
           event-type: upstream-release
           client-payload: |
             {
