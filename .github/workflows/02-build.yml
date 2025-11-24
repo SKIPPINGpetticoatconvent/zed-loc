@@ -89,6 +89,11 @@ jobs:
       - name: 安装 Rust（MSVC）
         uses: dtolnay/rust-toolchain@stable
 
+      - name: 缩短 CARGO_HOME（解决 pet 依赖路径过长）
+        run: |
+          mkdir C:\cargo
+          echo "CARGO_HOME=C:\cargo" >> $env:GITHUB_ENV
+
       - name: 编译 Windows 版本（MSVC）
         run: |
           cd C:\z
