@@ -253,90 +253,90 @@ jobs:
     # ###############################################################################
     # macOS 构建 (修复产物路径问题)
     # ###############################################################################
-    build-macos:
-      runs-on: macos-latest
-      needs: versioning
-      env:
-        SCCACHE_DIR: /Users/runner/Library/Caches/Mozilla.sccache
-      steps:
-        - name: 检出汉化仓库
-          uses: actions/checkout@v4
-          with:
-            ref: ${{ github.event.inputs.branch || 'main' }}
+  build-macos:
+    runs-on: macos-latest
+    needs: versioning
+    env:
+      SCCACHE_DIR: /Users/runner/Library/Caches/Mozilla.sccache
+    steps:
+      - name: 检出汉化仓库
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || 'main' }}
 
-        - name: 安装 sccache (macOS)
-          uses: mozilla-actions/sccache-action@v0.0.3
+      - name: 安装 sccache (macOS)
+        uses: mozilla-actions/sccache-action@v0.0.3
 
-        - name: 克隆 Zed 源码
-          run: git clone ${{ env.ZED_REPO }} zed
+      - name: 克隆 Zed 源码
+        run: git clone ${{ env.ZED_REPO }} zed
 
-        - name: 注入汉化文件
-          run: cp zh.json zed/
+      - name: 注入汉化文件
+        run: cp zh.json zed/
 
-        - name: 启用 sccache 缓存
-          uses: actions/cache@v3
-          with:
-            path: |
-              /Users/runner/Library/Caches/Mozilla.sccache
-              ~/.cargo/registry
-              ~/.cargo/git
-            key: sccache-macos-${{ hashFiles('zed/Cargo.lock') }}
-            restore-keys: sccache-macos-
+      - name: 启用 sccache 缓存
+        uses: actions/cache@v3
+        with:
+          path: |
+            /Users/runner/Library/Caches/Mozilla.sccache
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: sccache-macos-${{ hashFiles('zed/Cargo.lock') }}
+          restore-keys: sccache-macos-
 
-        - name: 安装 Rust
-          uses: dtolnay/rust-toolchain@stable
-          with:
-            targets: aarch64-apple-darwin
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
 
-        - name: 启动 sccache
-          run: sccache --start-server
+      - name: 启动 sccache
+        run: sccache --start-server
 
-        - name: 构建 macOS Release
-          run: |
-            cd zed
-            # 构建 Release 版
-            cargo build --release --target aarch64-apple-darwin --jobs 4
+      - name: 构建 macOS Release
+        run: |
+          cd zed
+          # 构建 Release 版
+          cargo build --release --target aarch64-apple-darwin --jobs 4
 
-            # 创建 App Bundle 结构
-            APP_NAME="Zed.app"
-            mkdir -p "$APP_NAME/Contents/MacOS"
-            mkdir -p "$APP_NAME/Contents/Resources"
-            cp target/aarch64-apple-darwin/release/zed "$APP_NAME/Contents/MacOS/zed"
+          # 创建 App Bundle 结构
+          APP_NAME="Zed.app"
+          mkdir -p "$APP_NAME/Contents/MacOS"
+          mkdir -p "$APP_NAME/Contents/Resources"
+          cp target/aarch64-apple-darwin/release/zed "$APP_NAME/Contents/MacOS/zed"
 
-            # 写入 Info.plist
-            cat > "$APP_NAME/Contents/Info.plist" <<EOF
-            <?xml version="1.0" encoding="UTF-8"?>
-            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-            <plist version="1.0">
-            <dict>
-                <key>CFBundleExecutable</key>
-                <string>zed</string>
-                <key>CFBundleIdentifier</key>
-                <string>dev.zed.Zed</string>
-                <key>CFBundleName</key>
-                <string>Zed</string>
-                <key>CFBundlePackageType</key>
-                <string>APPL</string>
-                <key>CFBundleShortVersionString</key>
-                <string>${{ needs.versioning.outputs.version }}</string>
-            </dict>
-            </plist>
-            EOF
+          # 写入 Info.plist
+          cat > "$APP_NAME/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>zed</string>
+              <key>CFBundleIdentifier</key>
+              <string>dev.zed.Zed</string>
+              <key>CFBundleName</key>
+              <string>Zed</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${{ needs.versioning.outputs.version }}</string>
+          </dict>
+          </plist>
+          EOF
 
-            # 打包为 dmg
-            hdiutil create -volname Zed -srcfolder "$APP_NAME" -ov -format UDZO zed-macos-aarch64.dmg
+          # 打包为 dmg
+          hdiutil create -volname Zed -srcfolder "$APP_NAME" -ov -format UDZO zed-macos-aarch64.dmg
 
-            # === 关键修复：将 dmg 移回根目录 ===
-            mv zed-macos-aarch64.dmg ../
+          # === 关键修复：将 dmg 移回根目录 ===
+          mv zed-macos-aarch64.dmg ../
 
-        - name: 打印 sccache 统计
-          run: sccache --show-stats
+      - name: 打印 sccache 统计
+        run: sccache --show-stats
 
-        - name: 上传产物
-          uses: actions/upload-artifact@v4
-          with:
-            name: zed-macos
-            path: zed-macos-aarch64.dmg
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-macos
+          path: zed-macos-aarch64.dmg
 
   # ###############################################################################
   # 发布
