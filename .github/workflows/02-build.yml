@@ -20,11 +20,12 @@ on:
 
 env:
   ZED_REPO: https://github.com/zed-industries/zed.git
+  # === ⚡️ 加速配置 ===
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+  RUSTC_WRAPPER: "sccache"
+  CARGO_INCREMENTAL: "0"
 
 jobs:
-  # ###############################################################################
-  # 1. 初始化版本号
-  # ###############################################################################
   versioning:
     runs-on: ubuntu-latest
     outputs:
@@ -38,7 +39,6 @@ jobs:
           else
             echo "v=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
           fi
-
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
              echo "r=${{ github.event.inputs.release }}" >> $GITHUB_OUTPUT
           else
@@ -46,57 +46,67 @@ jobs:
           fi
 
   # ###############################################################################
-  # 2. Windows 构建
+  # Windows 构建 (修复路径过长 + sccache)
   # ###############################################################################
   build-windows:
     runs-on: windows-latest
     needs: versioning
     steps:
-      - name: 检出汉化仓库 (包含 zh.json)
+      - name: 检出汉化仓库
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch || 'main' }}
 
-      - name: 克隆 Zed 源码 (短路径)
-        run: git clone ${{ env.ZED_REPO }} C:\z
+      # === 关键修复 1: 开启 Git 长路径支持 ===
+      - name: 开启 Git Longpaths
+        run: git config --system core.longpaths true
 
-      # === 修改处：直接复制 zh.json 到源码根目录 ===
-      - name: 注入汉化文件
+      # === 关键修复 2: 设置极短的 CARGO_HOME ===
+      - name: 设置 CARGO_HOME
         shell: pwsh
         run: |
-          Write-Host "Copying zh.json to C:\z\..."
-          Copy-Item zh.json C:\z\
+          # 创建 C:\c 作为 cargo 目录
+          New-Item -ItemType Directory -Force -Path C:\c
+          # 写入环境变量，后续所有步骤都会生效
+          echo "CARGO_HOME=C:\c" >> $env:GITHUB_ENV
+
+      - name: 克隆 Zed 源码
+        run: git clone ${{ env.ZED_REPO }} C:\z
+
+      - name: 注入汉化文件
+        shell: pwsh
+        run: Copy-Item zh.json C:\z\
 
       - name: 准备 Rust 环境
         run: |
           rustup update stable
           rustup default stable
 
-      - name: 配置 sccache & 环境变量
-        run: |
-          choco install sccache -y
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-          echo "CARGO_INCREMENTAL=0" >> $GITHUB_ENV
-          echo "ZED_DISABLE_WASMTIME=1" >> $GITHUB_ENV
+      - name: 安装 sccache
+        run: choco install sccache -y
 
-      - name: Cargo 缓存
+      # === 关键修复 3: 更新缓存路径 (对应新的 CARGO_HOME) ===
+      - name: 启用 sccache 缓存
         uses: actions/cache@v3
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
             C:\Users\runneradmin\AppData\Local\Mozilla\sccache
+            C:\c\registry
+            C:\c\git
             C:\z\target
-          key: cargo-win-${{ hashFiles('C:\z\Cargo.lock') }}
-          restore-keys: cargo-win-
+          key: sccache-win-${{ hashFiles('C:\z\Cargo.lock') }}
+          restore-keys: sccache-win-
 
-      - name: 启动 sccache
+      - name: 启动 sccache server
         run: sccache --start-server
 
       - name: 构建 Release
         run: |
           cd C:\z
           cargo build --release --jobs 2
+
+      - name: 打印 sccache 统计
+        run: sccache --show-stats
 
       - name: 打包 Windows
         shell: pwsh
@@ -112,11 +122,13 @@ jobs:
           path: zed-windows.zip
 
   # ###############################################################################
-  # 3. Linux 构建
+  # Linux 构建
   # ###############################################################################
   build-linux:
     runs-on: ubuntu-latest
     needs: versioning
+    env:
+      SCCACHE_DIR: /home/runner/.cache/sccache
     steps:
       - name: 释放磁盘空间
         uses: jlumbroso/free-disk-space@main
@@ -126,15 +138,17 @@ jobs:
           dotnet: true
           haskell: true
           large-packages: true
-          docker-images: true
-          swap-storage: true
+          swap-storage: false
 
       - name: 检出汉化仓库
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch || 'main' }}
 
-      - name: 安装依赖 & 修复 Linker/LTO
+      - name: 安装 sccache (Linux)
+        uses: mozilla-actions/sccache-action@v0.0.3
+
+      - name: 安装依赖
         run: |
           sudo apt update
           sudo apt install -y build-essential pkg-config python3 libasound2-dev \
@@ -146,38 +160,37 @@ jobs:
             libgl1-mesa-dev libegl1-mesa-dev libfreetype6-dev libfontconfig1-dev \
             libssl-dev libudev-dev libclang-dev clang cmake binutils-gold
 
-          # === 关键修复：解决 embed-bitcode 冲突 ===
-          # 1. Linker 参数保留在 RUSTFLAGS
           echo "RUSTFLAGS=-C link-arg=-fuse-ld=gold -Clink-arg=-Wl,--no-threads" >> $GITHUB_ENV
-          # 2. LTO 参数单独设置，Cargo 会智能处理，不再报错
-          echo "CARGO_PROFILE_RELEASE_LTO=thin" >> $GITHUB_ENV
 
       - name: 克隆 Zed 源码
         run: git clone ${{ env.ZED_REPO }} zed
 
-      # === 修改处：直接复制 zh.json 到源码根目录 ===
       - name: 注入汉化文件
-        run: |
-          echo "Copying zh.json to zed/..."
-          cp zh.json zed/
+        run: cp zh.json zed/
+
+      - name: 启用 sccache 缓存
+        uses: actions/cache@v3
+        with:
+          path: |
+            /home/runner/.cache/sccache
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: sccache-linux-${{ hashFiles('zed/Cargo.lock') }}
+          restore-keys: sccache-linux-
 
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cargo 缓存
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            zed/target
-          key: cargo-linux-${{ hashFiles('zed/Cargo.lock') }}
-          restore-keys: cargo-linux-
+      - name: 启动 sccache
+        run: sccache --start-server
 
       - name: 构建 Release
         run: |
           cd zed
           cargo build --release --jobs 2
+
+      - name: 打印 sccache 统计
+        run: sccache --show-stats
 
       - name: 打包 Linux
         run: |
@@ -185,7 +198,6 @@ jobs:
           cp zed/target/release/zed dist/usr/bin/
           tar -czvf zed-linux-x86_64.tar.gz -C dist .
 
-          # 简单构建 deb
           mkdir -p deb-pkg/DEBIAN
           mkdir -p deb-pkg/usr/bin
           cp zed/target/release/zed deb-pkg/usr/bin/
@@ -205,47 +217,51 @@ jobs:
             zed-linux-x86_64.deb
 
   # ###############################################################################
-  # 4. macOS 构建
+  # macOS 构建
   # ###############################################################################
   build-macos:
     runs-on: macos-latest
     needs: versioning
+    env:
+      SCCACHE_DIR: /Users/runner/Library/Caches/Mozilla.sccache
     steps:
       - name: 检出汉化仓库
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch || 'main' }}
 
+      - name: 安装 sccache (macOS)
+        uses: mozilla-actions/sccache-action@v0.0.3
+
       - name: 克隆 Zed 源码
         run: git clone ${{ env.ZED_REPO }} zed
 
-      # === 修改处：直接复制 zh.json 到源码根目录 ===
       - name: 注入汉化文件
-        run: |
-          echo "Copying zh.json to zed/..."
-          cp zh.json zed/
+        run: cp zh.json zed/
+
+      - name: 启用 sccache 缓存
+        uses: actions/cache@v3
+        with:
+          path: |
+            /Users/runner/Library/Caches/Mozilla.sccache
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: sccache-macos-${{ hashFiles('zed/Cargo.lock') }}
+          restore-keys: sccache-macos-
 
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
 
-      - name: Cargo 缓存
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            zed/target
-          key: cargo-mac-${{ hashFiles('zed/Cargo.lock') }}
-          restore-keys: cargo-mac-
+      - name: 启动 sccache
+        run: sccache --start-server
 
       - name: 构建 macOS Release
         run: |
           cd zed
           cargo build --release --target aarch64-apple-darwin --jobs 4
 
-          # 打包 App Bundle
           APP_NAME="Zed.app"
           mkdir -p "$APP_NAME/Contents/MacOS"
           mkdir -p "$APP_NAME/Contents/Resources"
@@ -272,6 +288,9 @@ jobs:
 
           hdiutil create -volname Zed -srcfolder "$APP_NAME" -ov -format UDZO zed-macos-aarch64.dmg
 
+      - name: 打印 sccache 统计
+        run: sccache --show-stats
+
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
@@ -279,7 +298,7 @@ jobs:
           path: zed-macos-aarch64.dmg
 
   # ###############################################################################
-  # 5. 发布
+  # 发布
   # ###############################################################################
   release:
     runs-on: ubuntu-latest
