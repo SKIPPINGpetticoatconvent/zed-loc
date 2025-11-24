@@ -166,7 +166,7 @@ jobs:
       - name: 编译 Windows（MSVC）
         run: |
           cd zed
-          cargo build --release --jobs 16
+          cargo build --release --jobs 2
           cd ..
           mkdir winpkg
           Copy-Item zed\target\release\zed.exe winpkg\
