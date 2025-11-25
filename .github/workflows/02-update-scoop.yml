@@ -1,4 +1,4 @@
-name: 03 Update Scoop Manifest
+name: 02 Update Scoop Manifest
 
 on:
   # 1. ✅ 新增：监听 02 号脚本是否运行完成
