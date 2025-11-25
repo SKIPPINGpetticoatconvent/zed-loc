@@ -4,11 +4,11 @@ on:
   release:
     types: [published]
   
-  # === 支持手动触发 (方便调试或修复) ===
+  # === 支持手动触发 (用于修复版本) ===
   workflow_dispatch:
     inputs:
       version_tag:
-        description: "Release 版本号 (例如: v20251125)"
+        description: "Release 版本号 (例如: v0.213.7)"
         required: true
         type: string
 
@@ -16,7 +16,7 @@ jobs:
   update-bucket:
     runs-on: windows-latest
     steps:
-      # 1. 确定版本号 (自动 vs 手动)
+      # 1. 确定版本号
       - name: 确定目标版本号
         shell: pwsh
         run: |
@@ -34,7 +34,7 @@ jobs:
             exit 1
           }
 
-      # 2. 获取产物链接 (带重试机制)
+      # 2. 获取产物链接
       - name: 等待并获取 Windows 产物信息
         id: get_asset
         run: |
@@ -90,17 +90,17 @@ jobs:
           token: ${{ secrets.SCOOP_PAT }} 
           path: bucket
 
-      # 5. 更新或创建 JSON (核心逻辑)
+      # 5. 更新或创建 Manifest (核心修复步骤)
       - name: 更新或创建 Manifest
         run: |
-          # 设定文件路径 (在检出的 bucket 文件夹内)
           $manifestPath = "bucket/zed-loc.json"
           
-          # === 分支 A: 文件不存在 -> 初始化新文件 ===
+          # === 关键修复：使用逗号 ,@(...) 强制生成嵌套数组 [[...]] ===
+          # 这将解决 "does not contain a method named item" 错误
+          $fixedShortcuts = @( ,@("zed.exe", "Zed") )
+
           if (-not (Test-Path "$pwd\$manifestPath")) {
-            Write-Host "⚠️ 文件不存在，正在初始化新的 Manifest..."
-            
-            # 创建初始 JSON 结构
+            Write-Host "⚠️ 初始化新 Manifest..."
             $json = [PSCustomObject]@{
                 version = "$env:TARGET_TAG"
                 description = "Zed Editor (Localized)"
@@ -113,9 +113,7 @@ jobs:
                     }
                 }
                 bin = "zed.exe"
-                shortcuts = @(
-                    @("zed.exe", "Zed")
-                )
+                shortcuts = $fixedShortcuts  # 使用正确结构
                 checkver = @{
                     github = "https://github.com/SKIPPINGpetticoatconvent/zed-loc"
                 }
@@ -127,17 +125,17 @@ jobs:
                     }
                 }
             }
-          } 
-          # === 分支 B: 文件存在 -> 更新现有文件 ===
-          else {
-            Write-Host "✅ 发现现有 Manifest，正在读取..."
+          } else {
+            Write-Host "✅ 更新现有 Manifest..."
             $jsonContent = Get-Content "$pwd\$manifestPath" -Raw -Encoding UTF8
             $json = $jsonContent | ConvertFrom-Json
             
-            # 更新版本
             $json.version = "$env:TARGET_TAG"
             
-            # 智能更新 URL 和 Hash
+            # === 强制覆盖 shortcuts 字段 (无论是否存在，都修复它) ===
+            # Add-Member -Force 会覆盖已存在的属性，确保 JSON 结构被纠正
+            $json | Add-Member -MemberType NoteProperty -Name "shortcuts" -Value $fixedShortcuts -Force
+
             if ($json.PSObject.Properties.Match('architecture') -and $json.architecture.PSObject.Properties.Match('64bit')) {
                 $json.architecture.'64bit'.url = "$env:URL"
                 $json.architecture.'64bit'.hash = "$env:SHA256"
@@ -147,14 +145,12 @@ jobs:
             }
           }
           
-          # === 统一写入 (强制 UTF-8 无 BOM) ===
           $newContent = $json | ConvertTo-Json -Depth 10
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
           [System.IO.File]::WriteAllText("$pwd\$manifestPath", $newContent, $utf8NoBom)
-          
-          Write-Host "✅ Manifest 已成功写入: $manifestPath"
+          Write-Host "✅ Manifest 已修复并更新。"
 
-      # 6. 推送更改
+      # 6. 推送
       - name: 提交并推送
         run: |
           cd bucket
