@@ -1,4 +1,4 @@
-name: 01 汉化发行（智能监测｜全自动构建）
+name: 02 汉化发行（智能监测｜全自动构建）
 
 on:
   # ✅ 允许 Push 到主分支时触发 (方便调试/自检)
@@ -6,7 +6,7 @@ on:
     branches:
       - main
     paths:
-      - ".github/workflows/*.yml"
+      - '.github/workflows/*.yml'
 
   # ✅ 手动触发
   workflow_dispatch:
@@ -20,7 +20,6 @@ on:
         type: string
 
   # ✅ 定时任务：每 6 小时自检一次
-  # (由于脚本内含版本对比逻辑，所以这里即使频繁运行也不会重复构建)
   schedule:
     - cron: "0 */6 * * *"
 
@@ -69,13 +68,13 @@ jobs:
           # === 2. 自动触发 (Schedule / Push) ===
           else
              echo "⏰ 定时任务/Push 触发，正在自检..."
-
+             
              # 获取官方最新版
              UPSTREAM=$(curl -s https://api.github.com/repos/zed-industries/zed/releases/latest | jq -r .tag_name)
-
+             
              # 获取自己仓库最新版 (如果没有 Release，默认为空)
              LOCAL=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name)
-
+             
              echo "🔍 官方最新: $UPSTREAM"
              echo "🔍 本地最新: $LOCAL"
 
@@ -136,7 +135,7 @@ jobs:
         run: |
           rustup update stable
           rustup default stable
-
+      
       - name: 安装 sccache
         run: choco install sccache -y
 
@@ -302,7 +301,7 @@ jobs:
             zed-linux-x86_64.deb
 
   # ===========================================================================
-  # 4. macOS 构建
+  # 4. macOS 构建 (已修复 hdiutil busy 错误)
   # ===========================================================================
   build-macos:
     needs: versioning
@@ -377,8 +376,26 @@ jobs:
           </dict>
           </plist>
           EOF
+          
+          # === 修复: 等待文件系统并重试 hdiutil ===
+          echo "💤 编译完成，等待文件系统稳定 (10s)..."
+          sleep 10
+          
+          echo "📦 开始打包 DMG..."
+          n=0
+          until [ "$n" -ge 10 ]
+          do
+             hdiutil create -volname Zed -srcfolder "$APP_NAME" -ov -format UDZO zed-macos-aarch64.dmg && break
+             n=$((n+1))
+             echo "⚠️ hdiutil 失败 (Resource busy?), 等待 15秒后重试 ($n/10)..."
+             sleep 15
+          done
+          
+          if [ ! -f "zed-macos-aarch64.dmg" ]; then
+             echo "❌ 最终打包失败，退出。"
+             exit 1
+          fi
 
-          hdiutil create -volname Zed -srcfolder "$APP_NAME" -ov -format UDZO zed-macos-aarch64.dmg
           mv zed-macos-aarch64.dmg ../
 
       - name: 停止 sccache
