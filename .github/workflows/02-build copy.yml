@@ -27,7 +27,7 @@ env:
   # 👇【关键修复】强制缓存带有 build.rs 的依赖（否则 Zed 这种大项目的缓存率几乎为 0）
   SCCACHE_RECACHE_THIRD_PARTY_DEPS: "1"
   # 👇【优化】防止缓存空间不足导致频繁剔除
-  SCCACHE_CACHE_SIZE: "10G"
+  SCCACHE_CACHE_SIZE: "3G"
 
 jobs:
   versioning:
