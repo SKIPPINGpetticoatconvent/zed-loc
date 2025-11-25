@@ -3,7 +3,7 @@ name: 02 Update Scoop Manifest
 on:
   # 1. ✅ 新增：监听 02 号脚本是否运行完成
   workflow_run:
-    workflows: ["02 汉化发行（智能监测｜全自动构建）"] # 必须和 02 的 name 完全一致
+    workflows: ["01 汉化发行（智能监测｜全自动构建）"] # 必须和 02 的 name 完全一致
     types:
       - completed
 
