@@ -1,0 +1,57 @@
+name: 03 自动同步汉化文件
+
+on:
+  # 每天北京时间早上 8:00 (UTC 0:00) 执行检查
+  schedule:
+    - cron: "0 0 * * *"
+  
+  # 允许手动触发
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-translation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出本地仓库
+        uses: actions/checkout@v4
+
+      - name: 下载上游 zh.json
+        run: |
+          # 使用 curl 下载 TC999 的最新 raw 文件
+          curl -o zh.json.new https://raw.githubusercontent.com/TC999/zed-loc/main/zh.json
+          
+          echo "⬇️ 已下载最新文件"
+
+      - name: 验证 JSON 格式 (安全检查)
+        run: |
+          # 如果下载的文件不是合法的 JSON，这一步会报错并停止，防止破坏本地文件
+          if jq empty zh.json.new > /dev/null 2>&1; then
+            echo "✅ JSON 格式验证通过"
+          else
+            echo "❌ 下载的文件格式错误，终止同步！"
+            exit 1
+          fi
+
+      - name: 对比并提交更新
+        id: check_changes
+        run: |
+          # 如果文件有变化（diff 返回非 0），则进行覆盖和提交
+          if ! cmp -s zh.json zh.json.new; then
+            echo "🔄 发现翻译更新，正在覆盖..."
+            mv zh.json.new zh.json
+            
+            # 配置 Git
+            git config --local user.name "github-actions[bot]"
+            git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            
+            git add zh.json
+            git commit -m "Auto-sync: Update zh.json from TC999/zed-loc"
+            git push
+            echo "🚀 推送成功！"
+          else
+            echo "💤 翻译文件没有变化，跳过。"
+            rm zh.json.new
+          fi
