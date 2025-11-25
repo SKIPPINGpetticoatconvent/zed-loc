@@ -5,41 +5,74 @@ on:
     types: [published]
 
 jobs:
-  update:
+  update-bucket:
     runs-on: windows-latest
-
     steps:
-      - name: 下载 Windows 构建产物
+      - name: 获取 Windows 产物信息
+        id: get_asset
         run: |
-          $url = "${{ github.event.release.assets[0].browser_download_url }}"
-          Invoke-WebRequest -Uri $url -OutFile zed-windows.zip
+          # === 关键修复 1: 精准查找 Windows zip 包 ===
+          # 遍历 JSON 寻找 name 结尾是 .zip 的文件
+          $assets = '${{ toJson(github.event.release.assets) }}' | ConvertFrom-Json
+          $winAsset = $assets | Where-Object { $_.name -like "*.zip" } | Select-Object -First 1
 
-      - name: 生成 SHA256
+          if ($null -eq $winAsset) {
+            Write-Error "❌ 未找到 .zip 格式的 Windows 产物，请检查 Release 文件。"
+            exit 1
+          }
+
+          echo "URL=$($winAsset.browser_download_url)" >> $env:GITHUB_ENV
+          echo "FILENAME=$($winAsset.name)" >> $env:GITHUB_ENV
+
+      - name: 下载并计算 Hash
         run: |
-          $sha = (Get-FileHash zed-windows.zip -Algorithm SHA256).Hash
-          echo "SHA256=$sha" >> $env:GITHUB_ENV
+          Write-Host "正在下载: $env:FILENAME"
+          Invoke-WebRequest -Uri $env:URL -OutFile $env:FILENAME
+          
+          $hash = (Get-FileHash $env:FILENAME -Algorithm SHA256).Hash
+          echo "SHA256=$hash" >> $env:GITHUB_ENV
+          
+          # 清理下载的文件
+          Remove-Item $env:FILENAME
 
-      - name: 克隆 Scoop bucket
+      - name: 检出 Scoop bucket
         uses: actions/checkout@v4
         with:
           repository: SKIPPINGpetticoatconvent/zed-loc-scoop-bucket
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # === 关键修复 2: 使用 PAT 替代默认 Token ===
+          # 你需要在仓库 Secrets 里存入一个名为 SCOOP_PAT 的 Token
+          token: ${{ secrets.SCOOP_PAT }} 
           path: bucket
 
-      - name: 更新 zed-loc.json
+      - name: 更新 manifest
         run: |
-          $file = "bucket/zed-loc.json"
-          $json = Get-Content $file | ConvertFrom-Json
+          $manifestPath = "bucket/zed-loc.json"
+          
+          # 读取并解析 JSON
+          $json = Get-Content $manifestPath -Raw | ConvertFrom-Json
+          
+          # 更新字段
           $json.version = "${{ github.event.release.tag_name }}"
-          $json.url = "${{ github.event.release.assets[0].browser_download_url }}"
-          $json.hash = "${{ env.SHA256 }}"
-          $json | ConvertTo-Json -Depth 10 | Out-File $file -Encoding UTF8
+          $json.url = "$env:URL"
+          $json.hash = "$env:SHA256"
+          
+          # === 关键修复 3: 强制 UTF-8 无 BOM 格式写入 ===
+          # PowerShell 5.1 默认会有 BOM，Scoop 有时不喜欢 BOM
+          $newContent = $json | ConvertTo-Json -Depth 10
+          [System.IO.File]::WriteAllText("$pwd\$manifestPath", $newContent)
 
-      - name: 推送到 scoop bucket
+      - name: 提交并推送
         run: |
           cd bucket
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add zed-loc.json
-          git commit -m "update to ${{ github.event.release.tag_name }}"
-          git push
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # 检查是否有变更（防止重复运行报错）
+          if (git status --porcelain) {
+            git add .
+            git commit -m "Auto-update: zed-loc to ${{ github.event.release.tag_name }}"
+            git push
+            Write-Host "✅ Scoop Manifest 已更新"
+          } else {
+            Write-Host "⚠️ 内容无变化，跳过提交"
+          }
