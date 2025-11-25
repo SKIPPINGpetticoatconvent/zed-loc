@@ -3,63 +3,120 @@ name: 03 Update Scoop Manifest
 on:
   release:
     types: [published]
+  
+  # === 支持手动触发 ===
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: "Release 版本号 (例如: 20251125，不带 v 也行，取决于你的Tag格式)"
+        required: true
+        type: string
 
 jobs:
   update-bucket:
     runs-on: windows-latest
     steps:
-      - name: 获取 Windows 产物信息
-        id: get_asset
+      # === 第一步：统一版本号变量 ===
+      # 无论是自动触发还是手动触发，都统一保存到环境变量 TARGET_TAG 中
+      - name: 确定目标版本号
+        shell: pwsh
         run: |
-          # === 关键修复 1: 精准查找 Windows zip 包 ===
-          # 遍历 JSON 寻找 name 结尾是 .zip 的文件
-          $assets = '${{ toJson(github.event.release.assets) }}' | ConvertFrom-Json
-          $winAsset = $assets | Where-Object { $_.name -like "*.zip" } | Select-Object -First 1
+          $autoTag = "${{ github.event.release.tag_name }}"
+          $manualTag = "${{ inputs.version_tag }}"
 
-          if ($null -eq $winAsset) {
-            Write-Error "❌ 未找到 .zip 格式的 Windows 产物，请检查 Release 文件。"
+          if (-not [string]::IsNullOrWhiteSpace($autoTag)) {
+            echo "TARGET_TAG=$autoTag" >> $env:GITHUB_ENV
+            Write-Host "🚀 触发模式: 自动 Release ($autoTag)"
+          } elseif (-not [string]::IsNullOrWhiteSpace($manualTag)) {
+            echo "TARGET_TAG=$manualTag" >> $env:GITHUB_ENV
+            Write-Host "👋 触发模式: 手动输入 ($manualTag)"
+          } else {
+            Write-Error "❌ 无法确定版本号！"
             exit 1
           }
 
-          echo "URL=$($winAsset.browser_download_url)" >> $env:GITHUB_ENV
-          echo "FILENAME=$($winAsset.name)" >> $env:GITHUB_ENV
+      - name: 等待并获取 Windows 产物信息
+        id: get_asset
+        run: |
+          # 使用统一的变量 $env:TARGET_TAG
+          $tag = $env:TARGET_TAG
+          Write-Host "🔎 正在查找版本: $tag"
+          
+          $maxRetries = 20
+          $retryCount = 0
+          $found = $false
+          $targetNamePattern = "*windows*.zip"
+
+          # 构建 API URL
+          $apiUrl = "https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag"
+          
+          while (-not $found -and $retryCount -lt $maxRetries) {
+            try {
+              $releaseData = Invoke-RestMethod -Uri $apiUrl -Method Get
+              $winAsset = $releaseData.assets | Where-Object { $_.name -like $targetNamePattern } | Select-Object -First 1
+
+              if ($null -ne $winAsset) {
+                $found = $true
+                Write-Host "✅ 成功找到产物: $($winAsset.name)"
+                echo "URL=$($winAsset.browser_download_url)" >> $env:GITHUB_ENV
+                echo "FILENAME=$($winAsset.name)" >> $env:GITHUB_ENV
+              } else {
+                throw "Assets list is empty"
+              }
+            } catch {
+              $retryCount++
+              Write-Host "⏳ [$retryCount / $maxRetries] 产物可能还在上传中，等待 15 秒..."
+              Start-Sleep -Seconds 15
+            }
+          }
+
+          if (-not $found) {
+            Write-Error "❌ 失败：在 Release ($tag) 中未找到符合 '$targetNamePattern' 的文件。"
+            exit 1
+          }
 
       - name: 下载并计算 Hash
         run: |
-          Write-Host "正在下载: $env:FILENAME"
+          Write-Host "⬇️ 正在下载: $env:FILENAME"
           Invoke-WebRequest -Uri $env:URL -OutFile $env:FILENAME
-          
           $hash = (Get-FileHash $env:FILENAME -Algorithm SHA256).Hash
+          Write-Host "Hash: $hash"
           echo "SHA256=$hash" >> $env:GITHUB_ENV
-          
-          # 清理下载的文件
           Remove-Item $env:FILENAME
 
       - name: 检出 Scoop bucket
         uses: actions/checkout@v4
         with:
           repository: SKIPPINGpetticoatconvent/zed-loc-scoop-bucket
-          # === 关键修复 2: 使用 PAT 替代默认 Token ===
-          # 你需要在仓库 Secrets 里存入一个名为 SCOOP_PAT 的 Token
           token: ${{ secrets.SCOOP_PAT }} 
           path: bucket
 
       - name: 更新 manifest
         run: |
           $manifestPath = "bucket/zed-loc.json"
+          if (-not (Test-Path "$pwd\$manifestPath")) {
+            Write-Error "❌ 找不到 $manifestPath"
+            exit 1
+          }
+
+          $jsonContent = Get-Content "$pwd\$manifestPath" -Raw -Encoding UTF8
+          $json = $jsonContent | ConvertFrom-Json
           
-          # 读取并解析 JSON
-          $json = Get-Content $manifestPath -Raw | ConvertFrom-Json
+          # === 使用统一变量更新版本 ===
+          $json.version = "$env:TARGET_TAG"
           
-          # 更新字段
-          $json.version = "${{ github.event.release.tag_name }}"
-          $json.url = "$env:URL"
-          $json.hash = "$env:SHA256"
+          if ($json.PSObject.Properties.Match('architecture') -and $json.architecture.PSObject.Properties.Match('64bit')) {
+              $json.architecture.'64bit'.url = "$env:URL"
+              $json.architecture.'64bit'.hash = "$env:SHA256"
+          } else {
+              $json.url = "$env:URL"
+              $json.hash = "$env:SHA256"
+          }
           
-          # === 关键修复 3: 强制 UTF-8 无 BOM 格式写入 ===
-          # PowerShell 5.1 默认会有 BOM，Scoop 有时不喜欢 BOM
           $newContent = $json | ConvertTo-Json -Depth 10
-          [System.IO.File]::WriteAllText("$pwd\$manifestPath", $newContent)
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText("$pwd\$manifestPath", $newContent, $utf8NoBom)
+          Write-Host "✅ Manifest updated locally."
 
       - name: 提交并推送
         run: |
@@ -67,12 +124,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           
-          # 检查是否有变更（防止重复运行报错）
           if (git status --porcelain) {
             git add .
-            git commit -m "Auto-update: zed-loc to ${{ github.event.release.tag_name }}"
+            # 提交信息也使用统一变量
+            git commit -m "Auto-update: zed-loc to $env:TARGET_TAG"
             git push
-            Write-Host "✅ Scoop Manifest 已更新"
+            Write-Host "🚀 推送成功！"
           } else {
-            Write-Host "⚠️ 内容无变化，跳过提交"
+            Write-Host "⚠️ 无变化，跳过推送。"
           }
