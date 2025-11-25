@@ -1,38 +1,69 @@
 name: 03 Update Scoop Manifest
 
 on:
+  # 1. ✅ 新增：监听 02 号脚本是否运行完成
+  workflow_run:
+    workflows: ["02 汉化发行（智能监测｜全自动构建）"] # 必须和 02 的 name 完全一致
+    types:
+      - completed
+
+  # 2. 保留：手动发布的事件 (以防万一你手动去网页点发布)
   release:
     types: [published]
 
-  # === 支持手动触发 (用于修复版本) ===
+  # 3. 保留：手动触发
   workflow_dispatch:
     inputs:
       version_tag:
-        description: "Release 版本号 (例如: v0.213.7)"
-        required: true
+        description: "Release 版本号 (空则取最新)"
+        required: false
         type: string
 
 jobs:
   update-bucket:
     runs-on: windows-latest
+    # 只有当 02 成功时才运行，或者手动触发
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'release' || github.event.workflow_run.conclusion == 'success' }}
     steps:
-      # 1. 确定版本号
+      # 1. 智能确定版本号 (核心修改)
       - name: 确定目标版本号
         shell: pwsh
         run: |
-          $autoTag = "${{ github.event.release.tag_name }}"
           $manualTag = "${{ inputs.version_tag }}"
+          $releaseEventTag = "${{ github.event.release.tag_name }}"
 
-          if (-not [string]::IsNullOrWhiteSpace($autoTag)) {
-            echo "TARGET_TAG=$autoTag" >> $env:GITHUB_ENV
-            Write-Host "🚀 触发模式: 自动 Release ($autoTag)"
-          } elseif (-not [string]::IsNullOrWhiteSpace($manualTag)) {
-            echo "TARGET_TAG=$manualTag" >> $env:GITHUB_ENV
-            Write-Host "👋 触发模式: 手动输入 ($manualTag)"
-          } else {
-            Write-Error "❌ 无法确定版本号！"
-            exit 1
+          $targetTag = ""
+
+          # 情况 A: 手动输入
+          if (-not [string]::IsNullOrWhiteSpace($manualTag)) {
+             Write-Host "👋 触发模式: 手动输入"
+             $targetTag = $manualTag
           }
+          # 情况 B: 通过 Release 事件触发
+          elseif (-not [string]::IsNullOrWhiteSpace($releaseEventTag)) {
+             Write-Host "🚀 触发模式: Release 事件"
+             $targetTag = $releaseEventTag
+          }
+          # 情况 C: 通过 workflow_run 触发 (此时没有 event tag，需自动获取最新)
+          else {
+             Write-Host "🔄 触发模式: 自动联动 (监听 02 完成)"
+             Write-Host "🔎 正在查询 API 获取最新 Release..."
+             try {
+                $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/${{ github.repository }}/releases/latest" -Method Get
+                $targetTag = $latest.tag_name
+             } catch {
+                Write-Error "❌ 无法获取最新 Release 信息"
+                exit 1
+             }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($targetTag)) {
+             Write-Error "❌ 最终未能确定版本号！"
+             exit 1
+          }
+
+          Write-Host "✅ 锁定目标版本: $targetTag"
+          echo "TARGET_TAG=$targetTag" >> $env:GITHUB_ENV
 
       # 2. 获取产物链接
       - name: 等待并获取 Windows 产物信息
@@ -90,13 +121,11 @@ jobs:
           token: ${{ secrets.SCOOP_PAT }}
           path: bucket
 
-      # 5. 更新或创建 Manifest (核心修复步骤)
+      # 5. 更新或创建 Manifest
       - name: 更新或创建 Manifest
         run: |
           $manifestPath = "bucket/zed-loc.json"
-
-          # === 关键修复：使用逗号 ,@(...) 强制生成嵌套数组 [[...]] ===
-          # 这将解决 "does not contain a method named item" 错误
+          # 修复嵌套数组问题
           $fixedShortcuts = @( ,@("zed.exe", "Zed") )
 
           if (-not (Test-Path "$pwd\$manifestPath")) {
@@ -113,7 +142,7 @@ jobs:
                     }
                 }
                 bin = "zed.exe"
-                shortcuts = $fixedShortcuts  # 使用正确结构
+                shortcuts = $fixedShortcuts
                 checkver = @{
                     github = "https://github.com/SKIPPINGpetticoatconvent/zed-loc"
                 }
@@ -132,16 +161,20 @@ jobs:
 
             $json.version = "$env:TARGET_TAG"
 
-            # === 强制覆盖 shortcuts 字段 (无论是否存在，都修复它) ===
-            # Add-Member -Force 会覆盖已存在的属性，确保 JSON 结构被纠正
+            # 强制修复 shortcuts
             $json | Add-Member -MemberType NoteProperty -Name "shortcuts" -Value $fixedShortcuts -Force
 
-            if ($json.PSObject.Properties.Match('architecture') -and $json.architecture.PSObject.Properties.Match('64bit')) {
-                $json.architecture.'64bit'.url = "$env:URL"
-                $json.architecture.'64bit'.hash = "$env:SHA256"
+            # 强制更新 Architecture (简化逻辑，直接重写以防结构变化)
+            $archObj = [PSCustomObject]@{
+                "64bit" = @{
+                    url = "$env:URL"
+                    hash = "$env:SHA256"
+                }
+            }
+            if ($json.PSObject.Properties.Match('architecture')) {
+                $json.architecture = $archObj
             } else {
-                $json.url = "$env:URL"
-                $json.hash = "$env:SHA256"
+                $json | Add-Member -MemberType NoteProperty -Name "architecture" -Value $archObj
             }
           }
 
