@@ -24,10 +24,10 @@ env:
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
   RUSTC_WRAPPER: "sccache"
   CARGO_INCREMENTAL: "0"
-  # 👇【关键修复】强制缓存带有 build.rs 的依赖（否则 Zed 这种大项目的缓存率几乎为 0）
   SCCACHE_RECACHE_THIRD_PARTY_DEPS: "1"
-  # 👇【优化】防止缓存空间不足导致频繁剔除
-  SCCACHE_CACHE_SIZE: "3G"
+  SCCACHE_CACHE_SIZE: "10G"
+  # 👇【核心修复】设置为 0 禁止 sccache 自动关闭进程，解决 Connection refused
+  SCCACHE_IDLE_TIMEOUT: "0"
 
 jobs:
   versioning:
@@ -50,42 +50,43 @@ jobs:
           fi
 
   # ###############################################################################
-  # Windows 构建 (修复路径过长 + sccache 路径统一)
+  # Windows 构建
   # ###############################################################################
   build-windows:
     runs-on: windows-latest
     needs: versioning
-    # 👇【关键修复】显式定义 Windows 缓存路径到短目录
     env:
       SCCACHE_DIR: C:\c\sccache
+      # Windows 下同样需要禁用超时
+      SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - name: 检出汉化仓库
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch || 'main' }}
 
-      # === 关键修复 1: 开启 Git 长路径支持 ===
       - name: 开启 Git Longpaths
         run: git config --system core.longpaths true
 
-      # === 关键修复 2: 设置极短的 CARGO_HOME 和 SCCACHE_DIR ===
-      - name: 设置 CARGO_HOME 和 SCCACHE 目录
+      - name: 设置目录环境
         shell: pwsh
         run: |
-          # 创建 C:\c 作为根目录
           New-Item -ItemType Directory -Force -Path C:\c
-          # 创建 sccache 专用目录
           New-Item -ItemType Directory -Force -Path C:\c\sccache
-
-          # 写入环境变量
           echo "CARGO_HOME=C:\c" >> $env:GITHUB_ENV
 
       - name: 克隆 Zed 源码
         run: git clone ${{ env.ZED_REPO }} C:\z
 
-      - name: 注入汉化文件
+      - name: 执行汉化替换
         shell: pwsh
-        run: Copy-Item zh.json C:\z\
+        run: |
+          Copy-Item replace.py C:\
+          Copy-Item zh.json C:\
+          Set-Location C:\
+          Rename-Item -Path "z" -NewName "zed"
+          python replace.py
+          Rename-Item -Path "zed" -NewName "z"
 
       - name: 准备 Rust 环境
         run: |
@@ -95,7 +96,6 @@ jobs:
       - name: 安装 sccache
         run: choco install sccache -y
 
-      # === 关键修复 3: 缓存路径必须与 env.SCCACHE_DIR 一致 ===
       - name: 启用 sccache 缓存
         uses: actions/cache@v3
         with:
@@ -111,45 +111,33 @@ jobs:
         run: |
           sccache --start-server
           sccache --zero-stats
+          # 检查 server 是否存活
+          sccache -s
 
-      # === 优化：增加重试逻辑，解决 503 网络下载失败 ===
       - name: 构建 Release (带重试)
         shell: pwsh
+        env:
+          # 👇【强制】再次显式注入 wrapper，防止环境变量丢失
+          RUSTC_WRAPPER: sccache
         run: |
           cd C:\z
           $maxRetries = 3
           $retryCount = 0
-
           do {
               $retryCount++
               Write-Host "🚀 Build Attempt $retryCount / $maxRetries"
-
-              # 执行构建命令
               cargo build --release --jobs 2
-
-              # 检查退出代码
-              if ($LASTEXITCODE -eq 0) {
-                  Write-Host "✅ Build Success!"
-                  exit 0
-              }
-
-              Write-Host "⚠️ Build failed with code $LASTEXITCODE."
-
-              if ($retryCount -lt $maxRetries) {
-                  Write-Host "⏳ Waiting 15 seconds before retrying..."
-                  Start-Sleep -Seconds 15
-              }
+              if ($LASTEXITCODE -eq 0) { Write-Host "✅ Success!"; exit 0 }
+              Write-Host "⚠️ Failed code $LASTEXITCODE."
+              if ($retryCount -lt $maxRetries) { Start-Sleep -Seconds 15 }
           } while ($retryCount -lt $maxRetries)
-
-          Write-Error "❌ Build failed after $maxRetries attempts."
           exit 1
 
-      - name: 打印 sccache 统计并停止
+      - name: 停止 sccache
         shell: pwsh
         run: |
           sccache --show-stats
-          # 👇【关键】停止 Server 以强制 Flush 缓存到磁盘
-          sccache --stop-server
+          sccache --stop-server || true
 
       - name: 打包 Windows
         shell: pwsh
@@ -165,13 +153,15 @@ jobs:
           path: zed-windows.zip
 
   # ###############################################################################
-  # Linux 构建
+  # Linux 构建 (你报错的地方)
   # ###############################################################################
   build-linux:
     runs-on: ubuntu-latest
     needs: versioning
     env:
       SCCACHE_DIR: /home/runner/.cache/sccache
+      # 👇【核心修复】防止 Daemon 自动退出
+      SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - name: 释放磁盘空间
         uses: jlumbroso/free-disk-space@main
@@ -188,7 +178,7 @@ jobs:
         with:
           ref: ${{ github.event.inputs.branch || 'main' }}
 
-      - name: 安装 sccache (Linux)
+      - name: 安装 sccache
         uses: mozilla-actions/sccache-action@v0.0.3
 
       - name: 安装依赖
@@ -202,14 +192,13 @@ jobs:
             libxcb-randr0-dev libxcb-keysyms1-dev libxcb-util-dev \
             libgl1-mesa-dev libegl1-mesa-dev libfreetype6-dev libfontconfig1-dev \
             libssl-dev libudev-dev libclang-dev clang cmake binutils-gold
-
           echo "RUSTFLAGS=-C link-arg=-fuse-ld=gold -Clink-arg=-Wl,--no-threads" >> $GITHUB_ENV
 
       - name: 克隆 Zed 源码
         run: git clone ${{ env.ZED_REPO }} zed
 
-      - name: 注入汉化文件
-        run: cp zh.json zed/
+      - name: 执行汉化替换
+        run: python3 replace.py
 
       - name: 启用 sccache 缓存
         uses: actions/cache@v3
@@ -224,20 +213,32 @@ jobs:
       - name: 安装 Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: 启动 sccache
+      - name: 启动 sccache (带检查)
         run: |
+          # 尝试先杀掉可能存在的僵尸进程
+          sccache --stop-server || true
+          # 启动 Server
           sccache --start-server
           sccache --zero-stats
+          # 👇 打印进程信息，确保它活着 (调试用)
+          ps aux | grep sccache
+          echo "SCCACHE Status Check:"
+          sccache -s
 
       - name: 构建 Release
+        env:
+          # 👇【强制】再次显式注入 wrapper，确保 Cargo 绝对能调用到 sccache
+          RUSTC_WRAPPER: sccache
         run: |
           cd zed
+          # 验证 wrapper 变量是否存在
+          echo "Current RUSTC_WRAPPER: $RUSTC_WRAPPER"
           cargo build --release --jobs 2
 
-      - name: 打印 sccache 统计并停止
+      - name: 停止 sccache
         run: |
           sccache --show-stats
-          sccache --stop-server
+          sccache --stop-server || true
 
       - name: 打包 Linux
         run: |
@@ -245,20 +246,15 @@ jobs:
           cp zed/target/release/zed dist/usr/bin/
           tar -czvf zed-linux-x86_64.tar.gz -C dist .
 
-          # Deb 打包
-          mkdir -p deb-pkg/DEBIAN
-          mkdir -p deb-pkg/usr/bin
+          mkdir -p deb-pkg/DEBIAN deb-pkg/usr/bin
           cp zed/target/release/zed deb-pkg/usr/bin/
-
           RAW_VERSION="${{ needs.versioning.outputs.version }}"
           CLEAN_VERSION="${RAW_VERSION#v}"
-
           echo "Package: zed-editor" > deb-pkg/DEBIAN/control
           echo "Version: $CLEAN_VERSION" >> deb-pkg/DEBIAN/control
           echo "Architecture: amd64" >> deb-pkg/DEBIAN/control
           echo "Maintainer: Zed-Loc" >> deb-pkg/DEBIAN/control
           echo "Description: A high-performance, multiplayer code editor." >> deb-pkg/DEBIAN/control
-
           dpkg-deb --build deb-pkg zed-linux-x86_64.deb
 
       - name: 上传产物
@@ -270,27 +266,28 @@ jobs:
             zed-linux-x86_64.deb
 
   # ###############################################################################
-  # macOS 构建 (修复产物路径问题)
+  # macOS 构建
   # ###############################################################################
   build-macos:
     runs-on: macos-latest
     needs: versioning
     env:
       SCCACHE_DIR: /Users/runner/Library/Caches/Mozilla.sccache
+      SCCACHE_IDLE_TIMEOUT: "0"
     steps:
       - name: 检出汉化仓库
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch || 'main' }}
 
-      - name: 安装 sccache (macOS)
+      - name: 安装 sccache
         uses: mozilla-actions/sccache-action@v0.0.3
 
       - name: 克隆 Zed 源码
         run: git clone ${{ env.ZED_REPO }} zed
 
-      - name: 注入汉化文件
-        run: cp zh.json zed/
+      - name: 执行汉化替换
+        run: python3 replace.py
 
       - name: 启用 sccache 缓存
         uses: actions/cache@v3
@@ -311,15 +308,17 @@ jobs:
         run: |
           sccache --start-server
           sccache --zero-stats
+          sccache -s
 
       - name: 构建 macOS Release
+        env:
+          RUSTC_WRAPPER: sccache
         run: |
           cd zed
           cargo build --release --target aarch64-apple-darwin --jobs 4
 
           APP_NAME="Zed.app"
-          mkdir -p "$APP_NAME/Contents/MacOS"
-          mkdir -p "$APP_NAME/Contents/Resources"
+          mkdir -p "$APP_NAME/Contents/MacOS" "$APP_NAME/Contents/Resources"
           cp target/aarch64-apple-darwin/release/zed "$APP_NAME/Contents/MacOS/zed"
 
           cat > "$APP_NAME/Contents/Info.plist" <<EOF
@@ -344,10 +343,10 @@ jobs:
           hdiutil create -volname Zed -srcfolder "$APP_NAME" -ov -format UDZO zed-macos-aarch64.dmg
           mv zed-macos-aarch64.dmg ../
 
-      - name: 打印 sccache 统计并停止
+      - name: 停止 sccache
         run: |
           sccache --show-stats
-          sccache --stop-server
+          sccache --stop-server || true
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
