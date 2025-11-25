@@ -1,0 +1,390 @@
+name: 02 汉化发行（全流程自动化｜三平台并行构建｜缓存加速）
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "是否正式发布 Release"
+        type: boolean
+        default: false
+      branch:
+        type: string
+        default: main
+        description: "汉化分支名"
+
+  repository_dispatch:
+    types: [upstream-release]
+
+  schedule:
+    - cron: "0 15 * * *"
+
+env:
+  ZED_REPO: https://github.com/zed-industries/zed.git
+  # === ⚡️ 加速配置 ===
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+  RUSTC_WRAPPER: "sccache"
+  CARGO_INCREMENTAL: "0"
+  # 👇【关键修复】强制缓存带有 build.rs 的依赖（否则 Zed 这种大项目的缓存率几乎为 0）
+  SCCACHE_RECACHE_THIRD_PARTY_DEPS: "1"
+  # 👇【优化】防止缓存空间不足导致频繁剔除
+  SCCACHE_CACHE_SIZE: "10G"
+
+jobs:
+  versioning:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.set_vars.outputs.v }}
+      should_release: ${{ steps.set_vars.outputs.r }}
+    steps:
+      - id: set_vars
+        run: |
+          if [ -n "${{ github.event.client_payload.version }}" ]; then
+            echo "v=${{ github.event.client_payload.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "v=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+          fi
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+              echo "r=${{ github.event.inputs.release }}" >> $GITHUB_OUTPUT
+          else
+              echo "r=true" >> $GITHUB_OUTPUT
+          fi
+
+  # ###############################################################################
+  # Windows 构建 (修复路径过长 + sccache 路径统一)
+  # ###############################################################################
+  build-windows:
+    runs-on: windows-latest
+    needs: versioning
+    # 👇【关键修复】显式定义 Windows 缓存路径到短目录
+    env:
+      SCCACHE_DIR: C:\c\sccache
+    steps:
+      - name: 检出汉化仓库
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || 'main' }}
+
+      # === 关键修复 1: 开启 Git 长路径支持 ===
+      - name: 开启 Git Longpaths
+        run: git config --system core.longpaths true
+
+      # === 关键修复 2: 设置极短的 CARGO_HOME 和 SCCACHE_DIR ===
+      - name: 设置 CARGO_HOME 和 SCCACHE 目录
+        shell: pwsh
+        run: |
+          # 创建 C:\c 作为根目录
+          New-Item -ItemType Directory -Force -Path C:\c
+          # 创建 sccache 专用目录
+          New-Item -ItemType Directory -Force -Path C:\c\sccache
+
+          # 写入环境变量
+          echo "CARGO_HOME=C:\c" >> $env:GITHUB_ENV
+
+      - name: 克隆 Zed 源码
+        run: git clone ${{ env.ZED_REPO }} C:\z
+
+      - name: 注入汉化文件
+        shell: pwsh
+        run: Copy-Item zh.json C:\z\
+
+      - name: 准备 Rust 环境
+        run: |
+          rustup update stable
+          rustup default stable
+
+      - name: 安装 sccache
+        run: choco install sccache -y
+
+      # === 关键修复 3: 缓存路径必须与 env.SCCACHE_DIR 一致 ===
+      - name: 启用 sccache 缓存
+        uses: actions/cache@v3
+        with:
+          path: |
+            C:\c\sccache
+            C:\c\registry
+            C:\c\git
+            C:\z\target
+          key: sccache-win-${{ hashFiles('C:\z\Cargo.lock') }}
+          restore-keys: sccache-win-
+
+      - name: 启动 sccache server
+        run: |
+          sccache --start-server
+          sccache --zero-stats
+
+      # === 优化：增加重试逻辑，解决 503 网络下载失败 ===
+      - name: 构建 Release (带重试)
+        shell: pwsh
+        run: |
+          cd C:\z
+          $maxRetries = 3
+          $retryCount = 0
+
+          do {
+              $retryCount++
+              Write-Host "🚀 Build Attempt $retryCount / $maxRetries"
+
+              # 执行构建命令
+              cargo build --release --jobs 2
+
+              # 检查退出代码
+              if ($LASTEXITCODE -eq 0) {
+                  Write-Host "✅ Build Success!"
+                  exit 0
+              }
+
+              Write-Host "⚠️ Build failed with code $LASTEXITCODE."
+
+              if ($retryCount -lt $maxRetries) {
+                  Write-Host "⏳ Waiting 15 seconds before retrying..."
+                  Start-Sleep -Seconds 15
+              }
+          } while ($retryCount -lt $maxRetries)
+
+          Write-Error "❌ Build failed after $maxRetries attempts."
+          exit 1
+
+      - name: 打印 sccache 统计并停止
+        shell: pwsh
+        run: |
+          sccache --show-stats
+          # 👇【关键】停止 Server 以强制 Flush 缓存到磁盘
+          sccache --stop-server
+
+      - name: 打包 Windows
+        shell: pwsh
+        run: |
+          mkdir zed-dist
+          Copy-Item C:\z\target\release\zed.exe zed-dist\
+          Compress-Archive -Path zed-dist\* -DestinationPath zed-windows.zip
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-windows
+          path: zed-windows.zip
+
+  # ###############################################################################
+  # Linux 构建
+  # ###############################################################################
+  build-linux:
+    runs-on: ubuntu-latest
+    needs: versioning
+    env:
+      SCCACHE_DIR: /home/runner/.cache/sccache
+    steps:
+      - name: 释放磁盘空间
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: false
+
+      - name: 检出汉化仓库
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || 'main' }}
+
+      - name: 安装 sccache (Linux)
+        uses: mozilla-actions/sccache-action@v0.0.3
+
+      - name: 安装依赖
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential pkg-config python3 libasound2-dev \
+            libx11-dev libx11-xcb-dev libxkbfile-dev libgtk-3-dev \
+            libxcb-xinput-dev libwayland-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxcb-xinerama0-dev \
+            libxcb-randr0-dev libxcb-keysyms1-dev libxcb-util-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libfreetype6-dev libfontconfig1-dev \
+            libssl-dev libudev-dev libclang-dev clang cmake binutils-gold
+
+          echo "RUSTFLAGS=-C link-arg=-fuse-ld=gold -Clink-arg=-Wl,--no-threads" >> $GITHUB_ENV
+
+      - name: 克隆 Zed 源码
+        run: git clone ${{ env.ZED_REPO }} zed
+
+      - name: 注入汉化文件
+        run: cp zh.json zed/
+
+      - name: 启用 sccache 缓存
+        uses: actions/cache@v3
+        with:
+          path: |
+            /home/runner/.cache/sccache
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: sccache-linux-${{ hashFiles('zed/Cargo.lock') }}
+          restore-keys: sccache-linux-
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 启动 sccache
+        run: |
+          sccache --start-server
+          sccache --zero-stats
+
+      - name: 构建 Release
+        run: |
+          cd zed
+          cargo build --release --jobs 2
+
+      - name: 打印 sccache 统计并停止
+        run: |
+          sccache --show-stats
+          sccache --stop-server
+
+      - name: 打包 Linux
+        run: |
+          mkdir -p dist/usr/bin
+          cp zed/target/release/zed dist/usr/bin/
+          tar -czvf zed-linux-x86_64.tar.gz -C dist .
+
+          # Deb 打包
+          mkdir -p deb-pkg/DEBIAN
+          mkdir -p deb-pkg/usr/bin
+          cp zed/target/release/zed deb-pkg/usr/bin/
+
+          RAW_VERSION="${{ needs.versioning.outputs.version }}"
+          CLEAN_VERSION="${RAW_VERSION#v}"
+
+          echo "Package: zed-editor" > deb-pkg/DEBIAN/control
+          echo "Version: $CLEAN_VERSION" >> deb-pkg/DEBIAN/control
+          echo "Architecture: amd64" >> deb-pkg/DEBIAN/control
+          echo "Maintainer: Zed-Loc" >> deb-pkg/DEBIAN/control
+          echo "Description: A high-performance, multiplayer code editor." >> deb-pkg/DEBIAN/control
+
+          dpkg-deb --build deb-pkg zed-linux-x86_64.deb
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-linux
+          path: |
+            zed-linux-x86_64.tar.gz
+            zed-linux-x86_64.deb
+
+  # ###############################################################################
+  # macOS 构建 (修复产物路径问题)
+  # ###############################################################################
+  build-macos:
+    runs-on: macos-latest
+    needs: versioning
+    env:
+      SCCACHE_DIR: /Users/runner/Library/Caches/Mozilla.sccache
+    steps:
+      - name: 检出汉化仓库
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || 'main' }}
+
+      - name: 安装 sccache (macOS)
+        uses: mozilla-actions/sccache-action@v0.0.3
+
+      - name: 克隆 Zed 源码
+        run: git clone ${{ env.ZED_REPO }} zed
+
+      - name: 注入汉化文件
+        run: cp zh.json zed/
+
+      - name: 启用 sccache 缓存
+        uses: actions/cache@v3
+        with:
+          path: |
+            /Users/runner/Library/Caches/Mozilla.sccache
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: sccache-macos-${{ hashFiles('zed/Cargo.lock') }}
+          restore-keys: sccache-macos-
+
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: 启动 sccache
+        run: |
+          sccache --start-server
+          sccache --zero-stats
+
+      - name: 构建 macOS Release
+        run: |
+          cd zed
+          cargo build --release --target aarch64-apple-darwin --jobs 4
+
+          APP_NAME="Zed.app"
+          mkdir -p "$APP_NAME/Contents/MacOS"
+          mkdir -p "$APP_NAME/Contents/Resources"
+          cp target/aarch64-apple-darwin/release/zed "$APP_NAME/Contents/MacOS/zed"
+
+          cat > "$APP_NAME/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>zed</string>
+              <key>CFBundleIdentifier</key>
+              <string>dev.zed.Zed</string>
+              <key>CFBundleName</key>
+              <string>Zed</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>${{ needs.versioning.outputs.version }}</string>
+          </dict>
+          </plist>
+          EOF
+
+          hdiutil create -volname Zed -srcfolder "$APP_NAME" -ov -format UDZO zed-macos-aarch64.dmg
+          mv zed-macos-aarch64.dmg ../
+
+      - name: 打印 sccache 统计并停止
+        run: |
+          sccache --show-stats
+          sccache --stop-server
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-macos
+          path: zed-macos-aarch64.dmg
+
+  # ###############################################################################
+  # 发布
+  # ###############################################################################
+  release:
+    runs-on: ubuntu-latest
+    needs: [versioning, build-windows, build-linux, build-macos]
+    if: ${{ needs.versioning.outputs.should_release == 'true' }}
+
+    steps:
+      - name: 下载所有产物
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 整理文件与生成 Hash
+        run: |
+          mkdir release-dist
+          mv artifacts/zed-windows/zed-windows.zip release-dist/
+          mv artifacts/zed-linux/zed-linux-x86_64.tar.gz release-dist/
+          mv artifacts/zed-linux/zed-linux-x86_64.deb release-dist/
+          mv artifacts/zed-macos/zed-macos-aarch64.dmg release-dist/
+
+          cd release-dist
+          sha256sum * > sha256sums.txt
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Zed 汉化版 ${{ needs.versioning.outputs.version }}
+          tag_name: ${{ needs.versioning.outputs.version }}
+          files: release-dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
