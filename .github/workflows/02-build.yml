@@ -18,12 +18,18 @@ on:
   schedule:
     - cron: "0 15 * * *"
 
+# === ⚡️ 优化：防止重复构建浪费资源 ===
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   ZED_REPO: https://github.com/zed-industries/zed.git
-  # === ⚡️ 加速配置 ===
+  # === ⚡️ 全局构建配置 ===
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-  RUSTC_WRAPPER: "sccache"
-  CARGO_INCREMENTAL: "0"
+  CARGO_INCREMENTAL: "0"       # CI 环境必须禁用增量编译
+  RUSTC_WRAPPER: "sccache"     # 全局声明 Wrapper
+  SCCACHE_IDLE_TIMEOUT: "0"    # 防止 sccache 因网络挂起
 
 jobs:
   versioning:
@@ -46,7 +52,7 @@ jobs:
           fi
 
   # ###############################################################################
-  # Windows 构建 (修复路径过长 + sccache)
+  # Windows 构建 (Sccache 修复版 + 路径黑科技)
   # ###############################################################################
   build-windows:
     runs-on: windows-latest
@@ -57,18 +63,23 @@ jobs:
         with:
           ref: ${{ github.event.inputs.branch || 'main' }}
 
-      # === 关键修复 1: 开启 Git 长路径支持 ===
       - name: 开启 Git Longpaths
         run: git config --system core.longpaths true
 
-      # === 关键修复 2: 设置极短的 CARGO_HOME ===
-      - name: 设置 CARGO_HOME
+      # === 关键修复 1: 强制定义环境与路径 ===
+      - name: 配置构建环境 (C盘根目录)
         shell: pwsh
         run: |
-          # 创建 C:\c 作为 cargo 目录
+          # 创建根目录
           New-Item -ItemType Directory -Force -Path C:\c
-          # 写入环境变量，后续所有步骤都会生效
+          
+          # 写入环境变量 (持久化)
           echo "CARGO_HOME=C:\c" >> $env:GITHUB_ENV
+          echo "SCCACHE_DIR=C:\c\sccache" >> $env:GITHUB_ENV
+          echo "RUSTC_WRAPPER=sccache" >> $env:GITHUB_ENV
+          
+          # 将 C:\c 加入 PATH，确保能找到 sccache.exe
+          echo "C:\c" >> $env:GITHUB_PATH
 
       - name: 克隆 Zed 源码
         run: git clone ${{ env.ZED_REPO }} C:\z
@@ -77,20 +88,32 @@ jobs:
         shell: pwsh
         run: Copy-Item zh.json C:\z\
 
+      # === 关键修复 2: 手动安装最新 sccache (弃用 choco) ===
+      - name: 安装最新 sccache (Windows)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 下载官方最新 release
+          gh release download -R mozilla/sccache -p '*pc-windows-msvc.zip' -O sccache.zip
+          # 解压
+          Expand-Archive sccache.zip -DestinationPath temp-sccache
+          # 移动 exe 到 C:\c (因为 C:\c 已在 PATH 中)
+          Copy-Item temp-sccache\sccache-*\sccache.exe C:\c\
+          # 验证
+          sccache --version
+
       - name: 准备 Rust 环境
         run: |
           rustup update stable
           rustup default stable
 
-      - name: 安装 sccache
-        run: choco install sccache -y
-
-      # === 关键修复 3: 更新缓存路径 (对应新的 CARGO_HOME) ===
+      # === 关键修复 3: 缓存路径必须与环境变量一致 ===
       - name: 启用 sccache 缓存
         uses: actions/cache@v3
         with:
           path: |
-            C:\Users\runneradmin\AppData\Local\Mozilla\sccache
+            C:\c\sccache
             C:\c\registry
             C:\c\git
             C:\z\target
@@ -100,39 +123,23 @@ jobs:
       - name: 启动 sccache server
         run: sccache --start-server
 
-      # === 优化：增加重试逻辑，解决 503 网络下载失败 ===
       - name: 构建 Release (带重试)
         shell: pwsh
         run: |
           cd C:\z
           $maxRetries = 3
           $retryCount = 0
-
           do {
               $retryCount++
               Write-Host "🚀 Build Attempt $retryCount / $maxRetries"
-
-              # 执行构建命令
               cargo build --release --jobs 2
-
-              # 检查退出代码
-              if ($LASTEXITCODE -eq 0) {
-                  Write-Host "✅ Build Success!"
-                  exit 0
-              }
-
-              Write-Host "⚠️ Build failed with code $LASTEXITCODE."
-
-              if ($retryCount -lt $maxRetries) {
-                  Write-Host "⏳ Waiting 15 seconds before retrying..."
-                  Start-Sleep -Seconds 15
-              }
+              if ($LASTEXITCODE -eq 0) { exit 0 }
+              Write-Host "⚠️ Build failed. Retrying in 15s..."
+              Start-Sleep -Seconds 15
           } while ($retryCount -lt $maxRetries)
-
-          Write-Error "❌ Build failed after $maxRetries attempts."
           exit 1
 
-      - name: 打印 sccache 统计
+      - name: 打印 sccache 统计 (验证)
         run: sccache --show-stats
 
       - name: 打包 Windows
@@ -140,7 +147,8 @@ jobs:
         run: |
           mkdir zed-dist
           Copy-Item C:\z\target\release\zed.exe zed-dist\
-          Compress-Archive -Path zed-dist\* -DestinationPath zed-windows.zip
+          # 使用 7z 压缩 (比 PowerShell 自带的快)
+          7z a zed-windows.zip zed-dist\
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
@@ -149,13 +157,14 @@ jobs:
           path: zed-windows.zip
 
   # ###############################################################################
-  # Linux 构建
+  # Linux 构建 (GH CLI 下载最新 Sccache)
   # ###############################################################################
   build-linux:
     runs-on: ubuntu-latest
     needs: versioning
     env:
       SCCACHE_DIR: /home/runner/.cache/sccache
+      RUSTC_WRAPPER: sccache
     steps:
       - name: 释放磁盘空间
         uses: jlumbroso/free-disk-space@main
@@ -172,8 +181,16 @@ jobs:
         with:
           ref: ${{ github.event.inputs.branch || 'main' }}
 
-      - name: 安装 sccache (Linux)
-        uses: mozilla-actions/sccache-action@v0.0.3
+      # === 关键修复: 手动安装最新 sccache ===
+      - name: 安装最新 sccache (Linux)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download -R mozilla/sccache -p '*x86_64-unknown-linux-musl.tar.gz' -O sccache.tar.gz
+          tar -xzf sccache.tar.gz
+          sudo mv sccache-*-x86_64-unknown-linux-musl/sccache /usr/local/bin/
+          sudo chmod +x /usr/local/bin/sccache
+          sccache --version
 
       - name: 安装依赖
         run: |
@@ -186,7 +203,6 @@ jobs:
             libxcb-randr0-dev libxcb-keysyms1-dev libxcb-util-dev \
             libgl1-mesa-dev libegl1-mesa-dev libfreetype6-dev libfontconfig1-dev \
             libssl-dev libudev-dev libclang-dev clang cmake binutils-gold
-
           echo "RUSTFLAGS=-C link-arg=-fuse-ld=gold -Clink-arg=-Wl,--no-threads" >> $GITHUB_ENV
 
       - name: 克隆 Zed 源码
@@ -219,7 +235,7 @@ jobs:
       - name: 打印 sccache 统计
         run: sccache --show-stats
 
-      - name: 打包 Linux
+      - name: 打包 Linux (Fix 版本号)
         run: |
           mkdir -p dist/usr/bin
           cp zed/target/release/zed dist/usr/bin/
@@ -230,7 +246,6 @@ jobs:
           mkdir -p deb-pkg/usr/bin
           cp zed/target/release/zed deb-pkg/usr/bin/
 
-          # === 关键修复：去除版本号开头的 'v' ===
           RAW_VERSION="${{ needs.versioning.outputs.version }}"
           CLEAN_VERSION="${RAW_VERSION#v}"
 
@@ -250,22 +265,28 @@ jobs:
             zed-linux-x86_64.tar.gz
             zed-linux-x86_64.deb
 
-    # ###############################################################################
-    # macOS 构建 (修复产物路径问题)
-    # ###############################################################################
+  # ###############################################################################
+  # macOS 构建 (Brew安装 + Ad-hoc签名)
+  # ###############################################################################
   build-macos:
     runs-on: macos-latest
     needs: versioning
     env:
       SCCACHE_DIR: /Users/runner/Library/Caches/Mozilla.sccache
+      RUSTC_WRAPPER: sccache
     steps:
       - name: 检出汉化仓库
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.branch || 'main' }}
 
-      - name: 安装 sccache (macOS)
-        uses: mozilla-actions/sccache-action@v0.0.3
+      # === 关键修复: 使用 Brew 安装 (稳健) ===
+      - name: 安装 sccache (Brew)
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          brew install sccache
+          sccache --version
 
       - name: 克隆 Zed 源码
         run: git clone ${{ env.ZED_REPO }} zed
@@ -294,16 +315,15 @@ jobs:
       - name: 构建 macOS Release
         run: |
           cd zed
-          # 构建 Release 版
           cargo build --release --target aarch64-apple-darwin --jobs 4
 
-          # 创建 App Bundle 结构
+          # 创建 App 结构
           APP_NAME="Zed.app"
           mkdir -p "$APP_NAME/Contents/MacOS"
           mkdir -p "$APP_NAME/Contents/Resources"
           cp target/aarch64-apple-darwin/release/zed "$APP_NAME/Contents/MacOS/zed"
 
-          # 写入 Info.plist
+          # Info.plist
           cat > "$APP_NAME/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -323,10 +343,16 @@ jobs:
           </plist>
           EOF
 
-          # 打包为 dmg
-          hdiutil create -volname Zed -srcfolder "$APP_NAME" -ov -format UDZO zed-macos-aarch64.dmg
+      # === 关键修复: 添加 Ad-hoc 签名 ===
+      - name: 执行 Ad-hoc 签名
+        run: |
+          cd zed
+          codesign --force --deep --sign - "Zed.app"
 
-          # === 关键修复：将 dmg 移回根目录 ===
+      - name: 打包 DMG
+        run: |
+          cd zed
+          hdiutil create -volname Zed -srcfolder "Zed.app" -ov -format UDZO zed-macos-aarch64.dmg
           mv zed-macos-aarch64.dmg ../
 
       - name: 打印 sccache 统计
