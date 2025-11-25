@@ -1,13 +1,14 @@
 name: 02 汉化发行（智能监测｜全自动构建）
 
 on:
-  # ✅ 新增：允许 Push 到主分支时触发 (方便调试/自检)
+  # ✅ 允许 Push 到主分支时触发 (方便调试/自检)
   push:
     branches:
       - main
     paths:
       - ".github/workflows/*.yml"
 
+  # ✅ 手动触发
   workflow_dispatch:
     inputs:
       release:
@@ -18,15 +19,12 @@ on:
         description: "指定构建版本 (空则自动获取官方最新)"
         type: string
 
-  # ✅ 监听 01 发来的信号
-  repository_dispatch:
-    types: [upstream-release]
-
-  # (可选) 保留 Cron 作为双重保险，或者删除它完全依赖 01
+  # ✅ 定时任务：每 6 小时自检一次
+  # (由于脚本内含版本对比逻辑，所以这里即使频繁运行也不会重复构建)
   schedule:
     - cron: "0 */6 * * *"
 
-# ✅ 新增：确保有创建 Release 的权限
+# ✅ 确保有创建 Release 的权限
 permissions:
   contents: write
 
@@ -38,7 +36,6 @@ env:
   CARGO_INCREMENTAL: "0"
   SCCACHE_RECACHE_THIRD_PARTY_DEPS: "1"
   SCCACHE_CACHE_SIZE: "10G"
-  # 👇【核心修复】设置为 0 禁止 sccache 自动关闭进程，解决 Connection refused
   SCCACHE_IDLE_TIMEOUT: "0"
 
 jobs:
@@ -55,15 +52,8 @@ jobs:
         run: |
           echo "Trigger Event: ${{ github.event_name }}"
 
-          # === 1. 优先检查 repository_dispatch (来自 01 的信号) ===
-          if [ "${{ github.event_name }}" == "repository_dispatch" ]; then
-             PAYLOAD_VER="${{ github.event.client_payload.version }}"
-             echo "🚀 收到 01 哨兵信号，目标版本: $PAYLOAD_VER"
-             echo "v=$PAYLOAD_VER" >> $GITHUB_OUTPUT
-             echo "r=true" >> $GITHUB_OUTPUT
-
-          # === 2. 其次检查 workflow_dispatch (手动触发) ===
-          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+          # === 1. 手动触发 (workflow_dispatch) ===
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
              INPUT_VER="${{ github.event.inputs.version }}"
              if [ -n "$INPUT_VER" ]; then
                 echo "👋 手动指定版本: $INPUT_VER"
@@ -76,21 +66,25 @@ jobs:
              fi
              echo "r=${{ github.event.inputs.release }}" >> $GITHUB_OUTPUT
 
-          # === 3. 最后是 Cron 或 Push 触发 (自检模式) ===
+          # === 2. 自动触发 (Schedule / Push) ===
           else
              echo "⏰ 定时任务/Push 触发，正在自检..."
+
+             # 获取官方最新版
              UPSTREAM=$(curl -s https://api.github.com/repos/zed-industries/zed/releases/latest | jq -r .tag_name)
+
+             # 获取自己仓库最新版 (如果没有 Release，默认为空)
              LOCAL=$(curl -s https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r .tag_name)
 
-             echo "Upstream: $UPSTREAM"
-             echo "Local:    $LOCAL"
+             echo "🔍 官方最新: $UPSTREAM"
+             echo "🔍 本地最新: $LOCAL"
 
              if [ "$UPSTREAM" != "null" ] && [ "$UPSTREAM" != "$LOCAL" ]; then
-                echo "🚀 发现新版本: $UPSTREAM"
+                echo "🚀 发现新版本！准备构建: $UPSTREAM"
                 echo "v=$UPSTREAM" >> $GITHUB_OUTPUT
                 echo "r=true" >> $GITHUB_OUTPUT
              else
-                echo "💤 无更新。"
+                echo "💤 版本一致或无更新，跳过构建。"
                 echo "r=false" >> $GITHUB_OUTPUT
              fi
           fi
@@ -105,7 +99,6 @@ jobs:
     env:
       SCCACHE_DIR: C:\c\sccache
       SCCACHE_IDLE_TIMEOUT: "0"
-      # 获取版本号
       BUILD_VERSION: ${{ needs.versioning.outputs.version }}
     steps:
       - name: 检出汉化仓库
@@ -126,7 +119,6 @@ jobs:
         run: |
           git clone ${{ env.ZED_REPO }} C:\z
           Set-Location C:\z
-          # 👇 关键修改：检出对应版本的 Tag
           git checkout $env:BUILD_VERSION
           Write-Host "已切换到版本: $env:BUILD_VERSION"
 
@@ -246,7 +238,6 @@ jobs:
         run: |
           git clone ${{ env.ZED_REPO }} zed
           cd zed
-          # 👇 关键修改
           git checkout $BUILD_VERSION
           echo "Checked out $BUILD_VERSION"
 
@@ -332,7 +323,6 @@ jobs:
         run: |
           git clone ${{ env.ZED_REPO }} zed
           cd zed
-          # 👇 关键修改
           git checkout $BUILD_VERSION
 
       - name: 执行汉化替换
