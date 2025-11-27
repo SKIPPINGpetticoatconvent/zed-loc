@@ -25,7 +25,7 @@ jobs:
     # 只有当 02 成功时才运行，或者手动触发
     if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'release' || github.event.workflow_run.conclusion == 'success' }}
     steps:
-      # 1. 智能确定版本号 (核心修改)
+      # 1. 智能确定版本号
       - name: 确定目标版本号
         shell: pwsh
         run: |
@@ -44,7 +44,7 @@ jobs:
              Write-Host "🚀 触发模式: Release 事件"
              $targetTag = $releaseEventTag
           }
-          # 情况 C: 通过 workflow_run 触发 (此时没有 event tag，需自动获取最新)
+          # 情况 C: 通过 workflow_run 触发 (自动获取最新)
           else {
              Write-Host "🔄 触发模式: 自动联动 (监听 02 完成)"
              Write-Host "🔎 正在查询 API 获取最新 Release..."
@@ -121,12 +121,31 @@ jobs:
           token: ${{ secrets.SCOOP_PAT }}
           path: bucket
 
-      # 5. 更新或创建 Manifest
+      # 5. 更新或创建 Manifest (集成注册表逻辑)
       - name: 更新或创建 Manifest
         run: |
           $manifestPath = "bucket/zed-loc.json"
-          # 修复嵌套数组问题
+
+          # 修复 shortcuts 嵌套数组问题
           $fixedShortcuts = @( ,@("zed.exe", "Zed") )
+
+          # --- 核心：注册表处理逻辑 (右键菜单) ---
+          $postInstall = @(
+              "Write-Host 'Adding Context Menu items...'",
+              '$zedPath = "$dir\zed.exe".Replace("\", "\\")',
+              '$iconPath = "$dir\zed.exe,0".Replace("\", "\\")',
+              'reg add "HKCU\Software\Classes\*\shell\Zed" /v "" /t REG_SZ /d "Open with Zed" /f',
+              'reg add "HKCU\Software\Classes\*\shell\Zed" /v "Icon" /t REG_SZ /d "$iconPath" /f',
+              'reg add "HKCU\Software\Classes\*\shell\Zed\command" /v "" /t REG_SZ /d "\"$zedPath\" \"%1\"" /f',
+              "Write-Host 'Context Menu added.'"
+          )
+
+          $preUninstall = @(
+              "Write-Host 'Removing Context Menu items...'",
+              'reg delete "HKCU\Software\Classes\*\shell\Zed" /f',
+              "Write-Host 'Context Menu removed.'"
+          )
+          # ----------------------------------------
 
           if (-not (Test-Path "$pwd\$manifestPath")) {
             Write-Host "⚠️ 初始化新 Manifest..."
@@ -143,6 +162,9 @@ jobs:
                 }
                 bin = "zed.exe"
                 shortcuts = $fixedShortcuts
+                # 注入注册表脚本
+                post_install = $postInstall
+                pre_uninstall = $preUninstall
                 checkver = @{
                     github = "https://github.com/SKIPPINGpetticoatconvent/zed-loc"
                 }
@@ -161,10 +183,24 @@ jobs:
 
             $json.version = "$env:TARGET_TAG"
 
-            # 强制修复 shortcuts
+            # 强制更新 shortcuts
             $json | Add-Member -MemberType NoteProperty -Name "shortcuts" -Value $fixedShortcuts -Force
 
-            # 强制更新 Architecture (简化逻辑，直接重写以防结构变化)
+            # 强制更新注册表脚本 (post_install)
+            if ($json.PSObject.Properties.Match('post_install')) {
+                $json.post_install = $postInstall
+            } else {
+                $json | Add-Member -MemberType NoteProperty -Name "post_install" -Value $postInstall
+            }
+
+            # 强制更新注册表脚本 (pre_uninstall)
+            if ($json.PSObject.Properties.Match('pre_uninstall')) {
+                $json.pre_uninstall = $preUninstall
+            } else {
+                $json | Add-Member -MemberType NoteProperty -Name "pre_uninstall" -Value $preUninstall
+            }
+
+            # 强制更新 Architecture
             $archObj = [PSCustomObject]@{
                 "64bit" = @{
                     url = "$env:URL"
@@ -178,6 +214,7 @@ jobs:
             }
           }
 
+          # 写入文件
           $newContent = $json | ConvertTo-Json -Depth 10
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
           [System.IO.File]::WriteAllText("$pwd\$manifestPath", $newContent, $utf8NoBom)
