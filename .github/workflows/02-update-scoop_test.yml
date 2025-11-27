@@ -108,21 +108,27 @@ jobs:
           # --- 准备数据 ---
           $fixedShortcuts = @( ,@("zed.exe", "Zed") )
 
-          # 【修复】使用 PowerShell 原生命令替代 reg.exe，彻底解决引号转义报错
+          # 【核心修复】使用 PowerShell 原生命令替代 reg.exe
+          # 这样可以彻底解决 "Invalid syntax" 问题
           $postInstall = @(
               "Write-Host 'Adding Context Menu items...'",
-              '$regPath = "HKCU:\Software\Classes\*\shell\Zed"',
-              '$commandPath = "$regPath\command"',
-              # 1. 确保路径存在
-              'if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }',
-              'if (-not (Test-Path $commandPath)) { New-Item -Path $commandPath -Force | Out-Null }',
-              # 2. 设置显示名称 (默认值)
-              'Set-Item -Path $regPath -Value "Open with Zed"',
-              # 3. 设置图标
-              'Set-ItemProperty -Path $regPath -Name "Icon" -Value "$dir\zed.exe,0"',
-              # 4. 设置命令 (双引号转义使用 PowerShell 原生方式)
-              '$cmdVal = "`"$dir\zed.exe`" `"%1`""',
-              'Set-Item -Path $commandPath -Value $cmdVal',
+              '$zedPath = "$dir\zed.exe"',
+              '$iconPath = "$dir\zed.exe,0"',
+
+              '# 1. 创建注册表项 (Force 确保存在)',
+              'New-Item -Path "HKCU:\Software\Classes\*\shell\Zed" -Force | Out-Null',
+              'New-Item -Path "HKCU:\Software\Classes\*\shell\Zed\command" -Force | Out-Null',
+
+              '# 2. 设置显示名称',
+              'Set-Item -Path "HKCU:\Software\Classes\*\shell\Zed" -Value "Open with Zed"',
+
+              '# 3. 设置图标',
+              'Set-ItemProperty -Path "HKCU:\Software\Classes\*\shell\Zed" -Name "Icon" -Value $iconPath',
+
+              '# 4. 设置命令 (处理引号)',
+              '$cmd = "`"$zedPath`" `"%1`""',
+              'Set-Item -Path "HKCU:\Software\Classes\*\shell\Zed\command" -Value $cmd',
+
               "Write-Host 'Context Menu added.'"
           )
 
