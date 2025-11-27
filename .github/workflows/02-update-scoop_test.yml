@@ -1,17 +1,12 @@
 name: 02 更新 Scoop Manifest
 
 on:
-  # 1. ✅ 新增：监听 01 号脚本是否运行完成
   workflow_run:
     workflows: ["01 汉化发行（智能监测｜全自动构建）"]
     types:
       - completed
-
-  # 2. 保留：手动发布的事件
   release:
     types: [published]
-
-  # 3. 保留：手动触发
   workflow_dispatch:
     inputs:
       version_tag:
@@ -105,7 +100,7 @@ jobs:
           token: ${{ secrets.SCOOP_PAT }}
           path: bucket
 
-      # 5. 更新或创建 Manifest (修复报错的核心部分)
+      # 5. 更新或创建 Manifest (已修复注册表逻辑)
       - name: 更新或创建 Manifest
         run: |
           $manifestPath = "bucket/zed-loc.json"
@@ -113,19 +108,27 @@ jobs:
           # --- 准备数据 ---
           $fixedShortcuts = @( ,@("zed.exe", "Zed") )
 
+          # 【修复】使用 PowerShell 原生命令替代 reg.exe，彻底解决引号转义报错
           $postInstall = @(
               "Write-Host 'Adding Context Menu items...'",
-              '$zedPath = "$dir\zed.exe".Replace("\", "\\")',
-              '$iconPath = "$dir\zed.exe,0".Replace("\", "\\")',
-              'reg add "HKCU\Software\Classes\*\shell\Zed" /v "" /t REG_SZ /d "Open with Zed" /f',
-              'reg add "HKCU\Software\Classes\*\shell\Zed" /v "Icon" /t REG_SZ /d "$iconPath" /f',
-              'reg add "HKCU\Software\Classes\*\shell\Zed\command" /v "" /t REG_SZ /d "\"$zedPath\" \"%1\"" /f',
+              '$regPath = "HKCU:\Software\Classes\*\shell\Zed"',
+              '$commandPath = "$regPath\command"',
+              # 1. 确保路径存在
+              'if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }',
+              'if (-not (Test-Path $commandPath)) { New-Item -Path $commandPath -Force | Out-Null }',
+              # 2. 设置显示名称 (默认值)
+              'Set-Item -Path $regPath -Value "Open with Zed"',
+              # 3. 设置图标
+              'Set-ItemProperty -Path $regPath -Name "Icon" -Value "$dir\zed.exe,0"',
+              # 4. 设置命令 (双引号转义使用 PowerShell 原生方式)
+              '$cmdVal = "`"$dir\zed.exe`" `"%1`""',
+              'Set-Item -Path $commandPath -Value $cmdVal',
               "Write-Host 'Context Menu added.'"
           )
 
           $preUninstall = @(
               "Write-Host 'Removing Context Menu items...'",
-              'reg delete "HKCU\Software\Classes\*\shell\Zed" /f',
+              'if (Test-Path "HKCU:\Software\Classes\*\shell\Zed") { Remove-Item "HKCU:\Software\Classes\*\shell\Zed" -Recurse -Force }',
               "Write-Host 'Context Menu removed.'"
           )
 
@@ -158,9 +161,6 @@ jobs:
             Write-Host "✅ 更新现有 Manifest..."
             $jsonContent = Get-Content "$pwd\$manifestPath" -Raw -Encoding UTF8
             $json = $jsonContent | ConvertFrom-Json
-
-            # 【核心修复】：统一使用 Add-Member -Force
-            # 作用：如果属性存在则覆盖，不存在则新建。解决 "Property cannot be found" 错误。
 
             # 1. 更新版本
             $json.version = "$env:TARGET_TAG"
