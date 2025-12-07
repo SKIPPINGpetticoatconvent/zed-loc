@@ -161,6 +161,20 @@ jobs:
 
             $json.version = "$env:TARGET_TAG"
 
+            # === 新增：清理注册表相关字段 ===
+            if ($json.PSObject.Properties.Match('post_install')) {
+                Write-Host "🧹 移除 post_install (清理注册表/右键菜单脚本)..."
+                $json.PSObject.Properties.Remove('post_install')
+            }
+            if ($json.PSObject.Properties.Match('pre_uninstall')) {
+                Write-Host "🧹 移除 pre_uninstall (清理注册表/右键菜单脚本)..."
+                $json.PSObject.Properties.Remove('pre_uninstall')
+            }
+            if ($json.PSObject.Properties.Match('notes')) {
+                 $json.PSObject.Properties.Remove('notes')
+            }
+            # ===============================
+
             # 强制修复 shortcuts
             $json | Add-Member -MemberType NoteProperty -Name "shortcuts" -Value $fixedShortcuts -Force
 
