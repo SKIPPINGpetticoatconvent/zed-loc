@@ -263,6 +263,7 @@ jobs:
             /home/runner/.cache/sccache
             ~/.cargo/registry
             ~/.cargo/git
+            zed/target
           key: sccache-linux-${{ hashFiles('zed/Cargo.lock') }}
           restore-keys: sccache-linux-
 
@@ -281,7 +282,7 @@ jobs:
           RUSTC_WRAPPER: sccache
         run: |
           cd zed
-          cargo build --release --jobs 2
+          cargo build --release --jobs 2 --locked
 
       - name: 停止 sccache
         run: |
@@ -353,6 +354,7 @@ jobs:
             /Users/runner/Library/Caches/Mozilla.sccache
             ~/.cargo/registry
             ~/.cargo/git
+            zed/target
           key: sccache-macos-${{ hashFiles('zed/Cargo.lock') }}
           restore-keys: sccache-macos-
 
@@ -371,7 +373,7 @@ jobs:
           RUSTC_WRAPPER: sccache
         run: |
           cd zed
-          cargo build --release --target aarch64-apple-darwin --jobs 4
+          cargo build --release --target aarch64-apple-darwin --jobs 4 --locked
 
           APP_NAME="Zed.app"
           mkdir -p "$APP_NAME/Contents/MacOS" "$APP_NAME/Contents/Resources"
